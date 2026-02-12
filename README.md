@@ -77,6 +77,12 @@ No dependencies required. The script uses only built-in macOS tools.
    ```
 3. Run it!
 
+## Images
+
+![macos-dock-folders-old](https://github.com/user-attachments/assets/723bb143-b7ac-4e77-ae9f-21b139148560)
+
+![macos-dock-folders-new](https://github.com/user-attachments/assets/dfdf0579-0ea7-4bf2-98a7-114312f419ac)
+
 ## License
 
 [MIT](LICENSE)
