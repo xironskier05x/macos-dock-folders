@@ -1,28 +1,24 @@
 #!/bin/bash
-# dock-folders 2.0 — High-performance native macOS Dock folder generator
+# dock-folders 2.1 — Bulletproof Native macOS Dock Folder Generator
 #
-# Generates fast, native .app wrappers for folders that display rich popup menus
-# when clicked in the macOS Dock, with hierarchical submenus, drag-and-drop file
-# moving, modifier-key actions, SF Symbols, and custom icons.
-#
-# Usage:
-#   ./dock-folders.sh /path/to/folder
-#   ./dock-folders.sh --all /path/to/parent-directory
-#   ./dock-folders.sh --symbol "folder.badge.gear" --color purple /path/to/folder
-#   ./dock-folders.sh --sort recent --add-to-dock /path/to/folder
+# Generates ultra-fast, native .app wrappers for folders with lazy-loaded popup
+# menus, persistent bookmark self-healing, package detection, alias resolution,
+# safe overwrite protection, and collision-free bundle identifiers.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_OUTPUT_DIR="$SCRIPT_DIR/build"
+DEFAULT_OUTPUT_DIR="$HOME/Applications/Dock Folders"
 OUTPUT_DIR=""
 ALL_MODE=false
 SYMBOL_NAME=""
 COLOR_ARG="dark"
 IMAGE_PATH=""
 SORT_MODE="name"
+TILE_MODE="folder"
 MAX_DEPTH=3
 ADD_TO_DOCK=false
+FORCE=false
 FOLDERS=()
 
 # ─── Usage / Help ─────────────────────────────────────────────────────────────
@@ -33,16 +29,16 @@ Usage: $(basename "$0") [OPTIONS] FOLDER [FOLDER ...]
 Generate ultra-fast native .app wrappers for folders with rich Dock popup menus.
 
 Options:
-  --output-dir DIR      Where to place generated .app bundles (default: ./build)
+  --output-dir DIR      Where to place generated .app bundles (default: ~/Applications/Dock Folders)
   --all DIR             Process all subdirectories within DIR
+  --mode MODE           Tile mode: 'folder' (browses directory) or 'launcher' (virtual app drawer) (default: folder)
   --symbol NAME         SF Symbol name for icon (e.g. folder.badge.gear, terminal.fill)
-  --color COLOR         Icon color: preset (blue, purple, green, orange, red, dark, etc.)
-                        or hex code (e.g. #007AFF)
+  --color COLOR         Icon color: preset (blue, purple, green, orange, red, dark, etc.) or hex code (#007AFF)
   --image PATH          Custom PNG/JPEG/ICNS file to use as icon
-  --sort MODE           Sort order: 'name' (A-Z), 'recent' (modified date), 'kind' (Apps/Folders/Files)
-                        (default: name)
-  --max-depth N         Nested subfolder menu depth limit (default: 3)
+  --sort MODE           Sort order: 'name' (A-Z), 'recent' (modified date), 'kind' (Apps/Folders/Files) (default: name)
+  --max-depth N         Nested subfolder menu depth limit [0..10] (default: 3)
   --add-to-dock         Automatically pin the generated .app to your macOS Dock
+  --force               Allow overwriting existing .app bundles not created by Dock Folders
   -h, --help            Show this help
 
 Keyboard & Mouse Shortcuts in Generated App:
@@ -51,61 +47,92 @@ Keyboard & Mouse Shortcuts in Generated App:
   ⌘1 ... ⌘9             Quick-launch top 9 items
   ⌘O                    Open root folder in Finder
   ⌘T                    Open root folder in Terminal
-  Drag & Drop           Drag files onto Dock icon to move them into the folder
+  Drag & Drop           Drag files onto Dock icon (copies in folder mode; links in launcher mode)
 
 Examples:
   $(basename "$0") ~/Documents/Coding
+  $(basename "$0") --mode launcher --symbol "sparkles" --color purple ~/Applications/AI_Apps
   $(basename "$0") --symbol "terminal.fill" --color dark ~/Developer/Projects
-  $(basename "$0") --symbol "music.note" --color purple --sort recent ~/Music
   $(basename "$0") --all ~/Documents/DockFolders --add-to-dock
 EOHELP
     exit 0
 }
 
-# ─── Argument parsing ─────────────────────────────────────────────────────────
+# ─── Argument parsing & validation ───────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output-dir)
-            OUTPUT_DIR="$2"
-            shift 2
-            ;;
+            [[ $# -lt 2 ]] && { echo "Error: --output-dir requires a directory path"; exit 1; }
+            OUTPUT_DIR="$2"; shift 2 ;;
         --all)
-            ALL_MODE=true
-            shift
-            ;;
+            ALL_MODE=true; shift ;;
+        --mode)
+            [[ $# -lt 2 ]] && { echo "Error: --mode requires an argument ('folder' or 'launcher')"; exit 1; }
+            TILE_MODE="$2"; shift 2 ;;
         --symbol)
-            SYMBOL_NAME="$2"
-            shift 2
-            ;;
+            [[ $# -lt 2 ]] && { echo "Error: --symbol requires an SF Symbol name"; exit 1; }
+            SYMBOL_NAME="$2"; shift 2 ;;
         --color)
-            COLOR_ARG="$2"
-            shift 2
-            ;;
+            [[ $# -lt 2 ]] && { echo "Error: --color requires a color name or hex code"; exit 1; }
+            COLOR_ARG="$2"; shift 2 ;;
         --image)
-            IMAGE_PATH="$2"
-            shift 2
-            ;;
+            [[ $# -lt 2 ]] && { echo "Error: --image requires an image file path"; exit 1; }
+            IMAGE_PATH="$2"; shift 2 ;;
         --sort)
-            SORT_MODE="$2"
-            shift 2
-            ;;
+            [[ $# -lt 2 ]] && { echo "Error: --sort requires a mode ('name', 'recent', 'kind')"; exit 1; }
+            SORT_MODE="$2"; shift 2 ;;
         --max-depth)
-            MAX_DEPTH="$2"
-            shift 2
-            ;;
+            [[ $# -lt 2 ]] && { echo "Error: --max-depth requires an integer"; exit 1; }
+            MAX_DEPTH="$2"; shift 2 ;;
         --add-to-dock)
-            ADD_TO_DOCK=true
-            shift
-            ;;
+            ADD_TO_DOCK=true; shift ;;
+        --force)
+            FORCE=true; shift ;;
         -h|--help)
-            usage
-            ;;
+            usage ;;
+        --)
+            shift; while [[ $# -gt 0 ]]; do FOLDERS+=("$1"); shift; done; break ;;
+        -*)
+            echo "Error: Unknown option '$1'. Use -h for help."; exit 1 ;;
         *)
-            FOLDERS+=("$1")
-            shift
-            ;;
+            FOLDERS+=("$1"); shift ;;
     esac
 done
+
+# Validate CLI inputs
+if [[ "$TILE_MODE" != "folder" && "$TILE_MODE" != "launcher" ]]; then
+    echo "Error: Invalid --mode '$TILE_MODE'. Must be 'folder' or 'launcher'."
+    exit 1
+fi
+
+if [[ "$SORT_MODE" != "name" && "$SORT_MODE" != "recent" && "$SORT_MODE" != "kind" && "$SORT_MODE" != "date" && "$SORT_MODE" != "modified" && "$SORT_MODE" != "type" ]]; then
+    echo "Error: Invalid --sort '$SORT_MODE'. Must be 'name', 'recent', or 'kind'."
+    exit 1
+fi
+
+if ! [[ "$MAX_DEPTH" =~ ^[0-9]+$ ]] || [[ "$MAX_DEPTH" -lt 0 ]] || [[ "$MAX_DEPTH" -gt 10 ]]; then
+    echo "Error: --max-depth must be an integer between 0 and 10."
+    exit 1
+fi
+
+if [[ -n "$IMAGE_PATH" && ! -f "$IMAGE_PATH" ]]; then
+    echo "Error: Custom image file '$IMAGE_PATH' does not exist."
+    exit 1
+fi
+
+# Ensure swiftc compiler is available
+if ! command -v swiftc &>/dev/null; then
+    echo "Error: 'swiftc' compiler not found. Please install Xcode Command Line Tools: xcode-select --install"
+    exit 1
+fi
+
+# Validate SF Symbol if provided
+if [[ -n "$SYMBOL_NAME" ]]; then
+    if ! swift -e 'import Cocoa; exit(NSImage(systemSymbolName: CommandLine.arguments[1], accessibilityDescription: nil) != nil ? 0 : 1)' "$SYMBOL_NAME" 2>/dev/null; then
+        echo "Error: SF Symbol '$SYMBOL_NAME' not found in macOS system symbols."
+        exit 1
+    fi
+fi
 
 if $ALL_MODE; then
     if [[ ${#FOLDERS[@]} -ne 1 ]]; then
@@ -117,6 +144,7 @@ if $ALL_MODE; then
         echo "Error: '$PARENT_DIR' is not a directory"
         exit 1
     fi
+    PARENT_DIR="$(cd "$PARENT_DIR" && pwd)"
     FOLDERS=()
     while IFS= read -r -d '' dir; do
         FOLDERS+=("$dir")
@@ -131,13 +159,24 @@ fi
 OUTPUT_DIR="${OUTPUT_DIR:-$DEFAULT_OUTPUT_DIR}"
 mkdir -p "$OUTPUT_DIR"
 
-# Ensure swiftc compiler is available
-if ! command -v swiftc &>/dev/null; then
-    echo "Error: 'swiftc' compiler not found. Please install Xcode Command Line Tools: xcode-select --install"
-    exit 1
+# ─── Compile Universal Runtime Binary (Cached) ────────────────────────────────
+RUNTIME_BIN="$SCRIPT_DIR/src/DockFolderRuntime"
+if [[ ! -f "$RUNTIME_BIN" || "$SCRIPT_DIR/src/runtime.swift" -nt "$RUNTIME_BIN" ]]; then
+    echo "⚙ Compiling universal DockFolderRuntime..."
+    swiftc -O -o "$RUNTIME_BIN" "$SCRIPT_DIR/src/runtime.swift"
 fi
 
-# ─── Icon Generation Helpers ──────────────────────────────────────────────────
+# ─── XML & JSON Helpers ───────────────────────────────────────────────────────
+escape_xml() {
+    local str="$1"
+    str="${str//&/&amp;}"
+    str="${str//</&lt;}"
+    str="${str//>/&gt;}"
+    str="${str//\"/&quot;}"
+    str="${str//\'/&apos;}"
+    echo "$str"
+}
+
 # Creates a 1024x1024 .icns file from SF Symbol, Emoji, Image, or Folder Icon
 create_icns() {
     local folder_path="$1"
@@ -149,11 +188,9 @@ create_icns() {
     local png_path="${icns_path%.icns}.png"
     local iconset_dir="${icns_path%.icns}.iconset"
 
-    # Option 1: Custom Image File
     if [[ -n "$custom_image" && -f "$custom_image" ]]; then
         sips -s format png "$custom_image" --out "$png_path" >/dev/null 2>&1 || cp "$custom_image" "$png_path"
     else
-        # Check for folder emoji xattr (from "Customize Folder")
         local emoji=""
         local xattr_data
         xattr_data=$(xattr -p com.apple.icon.folder#S "$folder_path" 2>/dev/null) || true
@@ -161,7 +198,6 @@ create_icns() {
             emoji=$(echo "$xattr_data" | python3 -c "import sys,json; print(json.load(sys.stdin).get('emoji',''))" 2>/dev/null) || true
         fi
 
-        # Swift helper to render icon
         local render_swift
         render_swift=$(cat <<'SWIFT'
 import Cocoa
@@ -220,7 +256,6 @@ guard let rep = NSBitmapImageRep(
 NSGraphicsContext.current = ctx
 
 if symbolName != nil || emojiStr != nil {
-    // Draw rounded background squircle
     let rect = NSRect(x: 0, y: 0, width: size, height: size)
     let path = NSBezierPath(roundedRect: rect, xRadius: 220, yRadius: 220)
     parseColor(colorStr).setFill()
@@ -243,7 +278,6 @@ if symbolName != nil || emojiStr != nil {
         attrStr.draw(at: NSPoint(x: drawX, y: drawY))
     }
 } else {
-    // Standard folder icon
     let ws = NSWorkspace.shared
     let theIcon = ws.icon(forFile: folderPath)
     theIcon.size = NSSize(width: size, height: size)
@@ -264,7 +298,6 @@ SWIFT
         return 1
     fi
 
-    # Create iconset with all required macOS sizes
     mkdir -p "$iconset_dir"
     sips -z 16 16     "$png_path" --out "$iconset_dir/icon_16x16.png"      >/dev/null 2>&1
     sips -z 32 32     "$png_path" --out "$iconset_dir/icon_16x16@2x.png"   >/dev/null 2>&1
@@ -283,337 +316,135 @@ SWIFT
     return $res
 }
 
-# ─── Swift Application Source Template ────────────────────────────────────────
-generate_swift_source() {
-    local target_folder="$1"
-    local folder_title="$2"
-    local sort_mode="$3"
-    local max_depth="$4"
-
-    cat <<SWIFT
-import Cocoa
-import UniformTypeIdentifiers
-
-class AppDelegate: NSObject, NSApplicationDelegate {
-    let folderPath: String = "$target_folder"
-    let folderName: String = "$folder_title"
-    let sortMode: String = "$sort_mode"
-    let maxDepth: Int = $max_depth
-    var menuOpened = false
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        DispatchQueue.main.async {
-            if !self.menuOpened {
-                self.showMenu()
-            }
-        }
-    }
-
-    // Drag-and-drop handler: Copies dropped files directly into the target folder
-    func application(_ app: NSApplication, openFiles filenames: [String]) {
-        self.menuOpened = true
-        let targetURL = URL(fileURLWithPath: folderPath)
-        let fm = FileManager.default
-        var copiedCount = 0
-
-        for file in filenames {
-            let sourceURL = URL(fileURLWithPath: file)
-            let destURL = targetURL.appendingPathComponent(sourceURL.lastPathComponent)
-            do {
-                var finalDestURL = destURL
-                var counter = 1
-                let baseName = destURL.deletingPathExtension().lastPathComponent
-                let ext = destURL.pathExtension
-                while fm.fileExists(atPath: finalDestURL.path) {
-                    let newName = ext.isEmpty ? "\\(baseName) \\(counter)" : "\\(baseName) \\(counter).\\(ext)"
-                    finalDestURL = targetURL.appendingPathComponent(newName)
-                    counter += 1
-                }
-                try fm.copyItem(at: sourceURL, to: finalDestURL)
-                copiedCount += 1
-            } catch {
-                NSLog("Failed to copy \\(file): \\(error)")
-            }
-        }
-
-        if copiedCount > 0 {
-            NSSound.beep()
-        }
-        NSApp.terminate(nil)
-    }
-
-    func calculatePopupPoint() -> NSPoint {
-        let mouseLoc = NSEvent.mouseLocation
-        let screens = NSScreen.screens
-        let currentScreen = screens.first(where: { NSMouseInRect(mouseLoc, \$0.frame, false) }) ?? NSScreen.main ?? (screens.isEmpty ? nil : screens[0])
-        let screenFrame = currentScreen?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-
-        let dockOrientation = (UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom").lowercased()
-
-        var popupX = mouseLoc.x
-        var popupY = mouseLoc.y
-
-        switch dockOrientation {
-        case "left":
-            popupX = screenFrame.minX + 45
-            popupY = mouseLoc.y
-        case "right":
-            popupX = screenFrame.maxX - 45
-            popupY = mouseLoc.y
-        case "bottom":
-            popupX = mouseLoc.x
-            popupY = screenFrame.minY + 45
-        default:
-            popupY = screenFrame.minY + 45
-        }
-
-        return NSPoint(x: popupX, y: popupY)
-    }
-
-    func buildMenu(for folderURL: URL, depth: Int) -> NSMenu {
-        let menu = NSMenu(title: folderURL.lastPathComponent)
-        menu.minimumWidth = 240
-        menu.autoenablesItems = false
-
-        let fm = FileManager.default
-        guard let contents = try? fm.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey, .isAliasFileKey, .isApplicationKey], options: [.skipsHiddenFiles]) else {
-            let emptyItem = NSMenuItem(title: "(Inaccessible folder)", action: nil, keyEquivalent: "")
-            emptyItem.isEnabled = false
-            menu.addItem(emptyItem)
-            return menu
-        }
-
-        if depth == 0 {
-            let headerItem = NSMenuItem(title: folderName, action: nil, keyEquivalent: "")
-            let headerFont = NSFont.boldSystemFont(ofSize: 13)
-            let headerAttrs: [NSAttributedString.Key: Any] = [.font: headerFont]
-            headerItem.attributedTitle = NSAttributedString(string: folderName, attributes: headerAttrs)
-            headerItem.isEnabled = false
-            menu.addItem(headerItem)
-            menu.addItem(NSMenuItem.separator())
-        }
-
-        let sortedURLs = sortItems(contents)
-        var keyIndex = 1
-
-        for url in sortedURLs {
-            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            let isApp = url.pathExtension.lowercased() == "app" || ((try? url.resourceValues(forKeys: [.isApplicationKey]).isApplication) ?? false)
-
-            var displayName = url.deletingPathExtension().lastPathComponent
-            if !isApp && !url.pathExtension.isEmpty {
-                displayName = url.lastPathComponent
-            }
-
-            let icon = NSWorkspace.shared.icon(forFile: url.path)
-            icon.size = NSSize(width: 18, height: 18)
-
-            let keyEq = (depth == 0 && keyIndex <= 9) ? "\\(keyIndex)" : ""
-            let item = NSMenuItem(title: displayName, action: #selector(itemClicked(_:)), keyEquivalent: keyEq)
-            if depth == 0 && keyIndex <= 9 {
-                item.keyEquivalentModifierMask = [.command]
-                keyIndex += 1
-            }
-            item.target = self
-            item.image = icon
-            item.representedObject = url.path
-
-            if isDir && !isApp && depth < maxDepth {
-                let submenu = buildMenu(for: url, depth: depth + 1)
-                item.submenu = submenu
-                item.action = nil
-            }
-
-            menu.addItem(item)
-
-            // ⌥ Option modifier: Reveal in Finder
-            if !isDir || isApp || depth >= maxDepth {
-                let altItem = NSMenuItem(title: "Reveal in Finder: \\(displayName)", action: #selector(revealInFinder(_:)), keyEquivalent: keyEq)
-                altItem.keyEquivalentModifierMask = keyEq.isEmpty ? [.option] : [.option, .command]
-                altItem.isAlternate = true
-                altItem.image = icon
-                altItem.target = self
-                altItem.representedObject = url.path
-                menu.addItem(altItem)
-            }
-        }
-
-        if sortedURLs.isEmpty {
-            let emptyItem = NSMenuItem(title: "(Folder is empty)", action: nil, keyEquivalent: "")
-            emptyItem.isEnabled = false
-            menu.addItem(emptyItem)
-        }
-
-        if depth == 0 {
-            menu.addItem(NSMenuItem.separator())
-
-            let finderItem = NSMenuItem(title: "Show in Finder", action: #selector(openFolderInFinder), keyEquivalent: "o")
-            finderItem.keyEquivalentModifierMask = [.command]
-            if let finderIcon = NSWorkspace.shared.icon(forFile: "/System/Library/CoreServices/Finder.app") as NSImage? {
-                finderIcon.size = NSSize(width: 18, height: 18)
-                finderItem.image = finderIcon
-            }
-            finderItem.target = self
-            menu.addItem(finderItem)
-
-            let termItem = NSMenuItem(title: "Open in Terminal", action: #selector(openFolderInTerminal), keyEquivalent: "t")
-            termItem.keyEquivalentModifierMask = [.command]
-            if let termIcon = NSWorkspace.shared.icon(forFile: "/System/Applications/Utilities/Terminal.app") as NSImage? {
-                termIcon.size = NSSize(width: 18, height: 18)
-                termItem.image = termIcon
-            }
-            termItem.target = self
-            menu.addItem(termItem)
-        }
-
-        return menu
-    }
-
-    func sortItems(_ items: [URL]) -> [URL] {
-        switch sortMode.lowercased() {
-        case "recent", "date", "modified":
-            return items.sorted {
-                let d1 = (try? \$0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
-                let d2 = (try? \$1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
-                return d1 > d2
-            }
-        case "kind", "type":
-            return items.sorted {
-                let isApp1 = \$0.pathExtension.lowercased() == "app"
-                let isApp2 = \$1.pathExtension.lowercased() == "app"
-                let isDir1 = (try? \$0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                let isDir2 = (try? \$1.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-
-                let p1 = isApp1 ? 0 : (isDir1 ? 1 : 2)
-                let p2 = isApp2 ? 0 : (isDir2 ? 1 : 2)
-                if p1 != p2 { return p1 < p2 }
-                return \$0.lastPathComponent.localizedCaseInsensitiveCompare(\$1.lastPathComponent) == .orderedAscending
-            }
-        default:
-            return items.sorted {
-                \$0.lastPathComponent.localizedCaseInsensitiveCompare(\$1.lastPathComponent) == .orderedAscending
-            }
-        }
-    }
-
-    @objc func itemClicked(_ sender: NSMenuItem) {
-        guard let path = sender.representedObject as? String else { return }
-        let url = URL(fileURLWithPath: path)
-        NSWorkspace.shared.open(url)
-    }
-
-    @objc func revealInFinder(_ sender: NSMenuItem) {
-        guard let path = sender.representedObject as? String else { return }
-        let url = URL(fileURLWithPath: path)
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-    }
-
-    @objc func openFolderInFinder() {
-        let url = URL(fileURLWithPath: folderPath)
-        NSWorkspace.shared.open(url)
-    }
-
-    @objc func openFolderInTerminal() {
-        let termURL = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
-        let targetURL = URL(fileURLWithPath: folderPath)
-        NSWorkspace.shared.open([targetURL], withApplicationAt: termURL, configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
-    }
-
-    func showMenu() {
-        self.menuOpened = true
-        let menu = buildMenu(for: URL(fileURLWithPath: folderPath), depth: 0)
-        let point = calculatePopupPoint()
-
-        menu.popUp(positioning: nil, at: point, in: nil)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NSApp.terminate(nil)
-        }
-    }
-}
-
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
-SWIFT
-}
-
-# ─── Dock Pinning Helper ──────────────────────────────────────────────────────
+# ─── Dock Pinning Helper (Idempotent) ─────────────────────────────────────────
 pin_to_dock() {
     local app_bundle="$1"
     if command -v dockutil &>/dev/null; then
-        dockutil --add "$app_bundle" --no-restart >/dev/null 2>&1 || true
+        if ! dockutil --find "$app_bundle" &>/dev/null; then
+            dockutil --add "$app_bundle" --no-restart >/dev/null 2>&1 || true
+        fi
     else
-        # Add to persistent-apps via defaults
-        local tile_data="<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$app_bundle</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
-        defaults write com.apple.dock persistent-apps -array-add "$tile_data"
+        if ! defaults read com.apple.dock persistent-apps 2>/dev/null | grep -Fq "$app_bundle"; then
+            local tile_data="<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$app_bundle</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
+            defaults write com.apple.dock persistent-apps -array-add "$tile_data"
+            DOCK_RESTART_NEEDED=true
+        fi
     fi
 }
 
-# ─── Main Build Loop ──────────────────────────────────────────────────────────
-echo "🚀  macOS Dock Folders 2.0 Generator"
+DOCK_RESTART_NEEDED=false
+
+# ─── Main Generator Loop ──────────────────────────────────────────────────────
+echo "🚀  macOS Dock Folders 2.1 Generator"
 echo "    Output Directory: $OUTPUT_DIR"
 echo ""
 
-for folder in "${FOLDERS[@]}"; do
-    folder="$(cd "$folder" 2>/dev/null && pwd)"
+BUILD_SUCCESS_COUNT=0
 
-    if [[ ! -d "$folder" ]]; then
-        echo "⚠ Skipping '$folder' — not a directory"
+for folder_arg in "${FOLDERS[@]}"; do
+    if [[ ! -d "$folder_arg" ]]; then
+        echo "⚠ Skipping '$folder_arg' — directory not found"
         continue
     fi
 
+    folder="$(cd "$folder_arg" && pwd)"
     folder_name="$(basename "$folder")"
+    parent_name="$(basename "$(dirname "$folder")")"
+
+    # Deterministic hash of the canonical path for bundle ID and collision avoidance
+    folder_hash=$(echo -n "$folder" | shasum -a 256 | head -c 12)
+    bundle_id="com.macosdockfolders.tile.$folder_hash"
+
+    # Disambiguate app name if needed
     app_name="${folder_name}.app"
     app_path="$OUTPUT_DIR/$app_name"
-    macos_dir="$app_path/Contents/MacOS"
-    resources_dir="$app_path/Contents/Resources"
+    if [[ -d "$app_path" ]]; then
+        existing_cfg="$app_path/Contents/Resources/config.json"
+        if [[ -f "$existing_cfg" ]]; then
+            existing_target=$(python3 -c "import json; print(json.load(open('$existing_cfg')).get('targetPath',''))" 2>/dev/null || true)
+            if [[ -n "$existing_target" && "$existing_target" != "$folder" ]]; then
+                app_name="${folder_name} (${parent_name}).app"
+                app_path="$OUTPUT_DIR/$app_name"
+            fi
+        fi
+    fi
 
     echo "📁 Building: $folder_name"
 
-    # Remove previous build if present
-    rm -rf "$app_path"
-    mkdir -p "$macos_dir" "$resources_dir"
-
-    # 1. Compile native Swift executable
-    echo "  ⚙ Compiling native Swift binary..."
-    tmp_swift="$OUTPUT_DIR/.tmp_${folder_name}.swift"
-    generate_swift_source "$folder" "$folder_name" "$SORT_MODE" "$MAX_DEPTH" > "$tmp_swift"
-    swiftc -O -o "$macos_dir/DockFolder" "$tmp_swift"
-    rm -f "$tmp_swift"
-
-    # 2. Generate and apply custom icon (.icns)
-    echo "  🎨 Generating app icon..."
-    icns_path="$resources_dir/applet.icns"
-    if create_icns "$folder" "$icns_path" "$SYMBOL_NAME" "$COLOR_ARG" "$IMAGE_PATH"; then
-        echo "  ✅ Custom icon applied"
-    else
-        echo "  ⚠ Standard icon used"
+    # Safety check: Verify overwrite permission if app already exists
+    if [[ -d "$app_path" && "$FORCE" != "true" ]]; then
+        is_dock_folder=$(/usr/libexec/PlistBuddy -c "Print :DockFoldersGenerated" "$app_path/Contents/Info.plist" 2>/dev/null || echo "false")
+        if [[ "$is_dock_folder" != "true" && "$is_dock_folder" != "YES" ]]; then
+            echo "  ❌ Error: '$app_path' exists and was not created by Dock Folders."
+            echo "     Use --force to overwrite non-Dock-Folders apps."
+            continue
+        fi
     fi
 
-    # 3. Create Info.plist with Drag-and-Drop and LSUIElement support
-    bundle_id="com.dock-folders.$(echo "$folder_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
-    cat <<PLIST > "$app_path/Contents/Info.plist"
+    # Staging directory for atomic build
+    staging_dir=$(mktemp -d "/tmp/dockfolder_build.XXXXXX")
+    staging_app="$staging_dir/$app_name"
+    mkdir -p "$staging_app/Contents/MacOS" "$staging_app/Contents/Resources"
+
+    # 1. Copy universal runtime binary
+    cp "$RUNTIME_BIN" "$staging_app/Contents/MacOS/DockFolderRuntime"
+    chmod +x "$staging_app/Contents/MacOS/DockFolderRuntime"
+
+    # 2. Generate Base64 URL Bookmark for persistent self-healing tracking
+    bookmark_b64=$(swift -e '
+import Foundation
+let u = URL(fileURLWithPath: CommandLine.arguments[1])
+if let b = try? u.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil) {
+    print(b.base64EncodedString())
+}
+' "$folder" 2>/dev/null || echo "")
+
+    # 3. Create config.json safely
+    python3 -c "
+import json, sys
+data = {
+    'targetPath': sys.argv[1],
+    'targetBookmarkBase64': sys.argv[2] if sys.argv[2] else None,
+    'displayName': sys.argv[3],
+    'sortMode': sys.argv[4],
+    'maxDepth': int(sys.argv[5]),
+    'tileMode': sys.argv[6]
+}
+with open(sys.argv[7], 'w') as f:
+    json.dump(data, f, indent=2)
+" "$folder" "$bookmark_b64" "$folder_name" "$SORT_MODE" "$MAX_DEPTH" "$TILE_MODE" "$staging_app/Contents/Resources/config.json"
+
+    # 4. Generate applet.icns
+    icns_path="$staging_app/Contents/Resources/applet.icns"
+    if create_icns "$folder" "$icns_path" "$SYMBOL_NAME" "$COLOR_ARG" "$IMAGE_PATH"; then
+        echo "  🎨 Custom icon applied"
+    else
+        echo "  🎨 Standard folder icon applied"
+    fi
+
+    # 5. Create Info.plist safely with LSHandlerRank = None
+    escaped_title=$(escape_xml "$folder_name")
+    cat <<PLIST > "$staging_app/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>DockFolder</string>
+    <string>DockFolderRuntime</string>
     <key>CFBundleIdentifier</key>
     <string>$bundle_id</string>
     <key>CFBundleName</key>
-    <string>$folder_name</string>
+    <string>$escaped_title</string>
     <key>CFBundleDisplayName</key>
-    <string>$folder_name</string>
+    <string>$escaped_title</string>
     <key>CFBundleIconFile</key>
     <string>applet.icns</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.0</string>
+    <string>2.1</string>
+    <key>DockFoldersGenerated</key>
+    <true/>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
@@ -626,7 +457,7 @@ for folder in "${FOLDERS[@]}"; do
             <key>CFBundleTypeRole</key>
             <string>Viewer</string>
             <key>LSHandlerRank</key>
-            <string>Alternate</string>
+            <string>None</string>
             <key>LSItemContentTypes</key>
             <array>
                 <string>public.item</string>
@@ -647,13 +478,34 @@ for folder in "${FOLDERS[@]}"; do
 </plist>
 PLIST
 
-    # 4. Ad-hoc code sign for macOS TCC
-    echo "  🔏 Code-signing application bundle..."
-    xattr -cr "$app_path" 2>/dev/null || true
-    codesign --force --sign - "$app_path" 2>&1 >/dev/null || true
+    # 6. Validate Info.plist
+    if ! plutil -lint "$staging_app/Contents/Info.plist" >/dev/null 2>&1; then
+        echo "  ❌ Plist validation failed for $folder_name"
+        rm -rf "$staging_dir"
+        continue
+    fi
+
+    # 7. Ad-hoc code sign and strict validation
+    xattr -cr "$staging_app" 2>/dev/null || true
+    if ! codesign --force --sign - "$staging_app" >/dev/null 2>&1; then
+        echo "  ❌ Code signing failed for $folder_name"
+        rm -rf "$staging_dir"
+        continue
+    fi
+
+    if ! codesign --verify --strict "$staging_app" >/dev/null 2>&1; then
+        echo "  ❌ Strict codesign verification failed for $folder_name"
+        rm -rf "$staging_dir"
+        continue
+    fi
+
+    # 8. Atomically install into final destination
+    rm -rf "$app_path"
+    mv "$staging_app" "$app_path"
+    rm -rf "$staging_dir"
     touch "$app_path"
 
-    # 5. Optional Dock pinning
+    # 9. Optional idempotent Dock Pinning
     if $ADD_TO_DOCK; then
         echo "  📌 Pinning to macOS Dock..."
         pin_to_dock "$app_path"
@@ -661,16 +513,17 @@ PLIST
 
     echo "  🎉 Successfully created: $app_path"
     echo ""
+    BUILD_SUCCESS_COUNT=$((BUILD_SUCCESS_COUNT + 1))
 done
 
-if $ADD_TO_DOCK; then
+if $DOCK_RESTART_NEEDED; then
     killall Dock 2>/dev/null || true
 fi
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "✨ Build Complete!"
+echo "✨ Build Complete ($BUILD_SUCCESS_COUNT created)"
 echo "📍 Location: $OUTPUT_DIR"
-if ! $ADD_TO_DOCK; then
+if ! $ADD_TO_DOCK && [[ $BUILD_SUCCESS_COUNT -gt 0 ]]; then
     echo "💡 Drag the generated .app files into your macOS Dock."
 fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
