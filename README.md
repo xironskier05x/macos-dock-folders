@@ -2,7 +2,7 @@
 
 [![CI Tests](https://github.com/xironskier05x/macos-dock-folders/actions/workflows/test.yml/badge.svg)](https://github.com/xironskier05x/macos-dock-folders/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-v3.0.0--RC-orange.svg)](https://github.com/xironskier05x/macos-dock-folders)
+[![Release](https://img.shields.io/badge/Release-v3.0.0-green.svg)](https://github.com/xironskier05x/macos-dock-folders/releases)
 [![Platform](https://img.shields.io/badge/macOS-13.0%2B%20%28Universal%20arm64%20%2B%20x86__64%29-brightgreen.svg)]()
 
 Transform any folder or collection into a **high-performance, clickable macOS Dock launcher** with native List Menus, visual App Grids, drag-and-drop management, persistent URL bookmark self-healing, SF Symbols styling, and an intuitive native desktop GUI.

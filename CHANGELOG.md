@@ -2,7 +2,7 @@
 
 All notable changes to **macOS Dock Folders** are documented in this file.
 
-## [3.0.0-rc1] - 2026-08-28 (Release Candidate 1)
+## [3.0.0] - 2026-08-28 (Manager.app & Visual Grid Launchers)
 
 ### 🖥️ Dock Folders Manager.app
 - **Native SwiftUI Desktop App**: Built a modern macOS Manager application featuring `NavigationSplitView`, native sidebar, live presentation previews, custom icon pickers, and settings inspector.
