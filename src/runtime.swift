@@ -26,11 +26,6 @@ struct RawItem {
     let modDate: Date
 }
 
-struct ItemMetadata {
-    let raw: RawItem
-    let icon: NSImage
-}
-
 class SubmenuLoader: NSObject, NSMenuDelegate {
     let folderURL: URL
     let depth: Int
