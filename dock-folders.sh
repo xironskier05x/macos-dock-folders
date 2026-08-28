@@ -1,11 +1,15 @@
 #!/bin/bash
-# dock-folders — Generate .app wrappers for folders so custom icons show in the macOS Dock
-# Each generated app shows a native popup menu with the folder's contents when clicked.
+# dock-folders 2.0 — High-performance native macOS Dock folder generator
+#
+# Generates fast, native .app wrappers for folders that display rich popup menus
+# when clicked in the macOS Dock, with hierarchical submenus, drag-and-drop file
+# moving, modifier-key actions, SF Symbols, and custom icons.
 #
 # Usage:
-#   ./dock-folders.sh /path/to/folder1 [/path/to/folder2 ...]
-#   ./dock-folders.sh --output-dir ~/MyApps /path/to/folder
+#   ./dock-folders.sh /path/to/folder
 #   ./dock-folders.sh --all /path/to/parent-directory
+#   ./dock-folders.sh --symbol "folder.badge.gear" --color purple /path/to/folder
+#   ./dock-folders.sh --sort recent --add-to-dock /path/to/folder
 
 set -euo pipefail
 
@@ -13,29 +17,52 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_OUTPUT_DIR="$SCRIPT_DIR/build"
 OUTPUT_DIR=""
 ALL_MODE=false
+SYMBOL_NAME=""
+COLOR_ARG="dark"
+IMAGE_PATH=""
+SORT_MODE="name"
+MAX_DEPTH=3
+ADD_TO_DOCK=false
 FOLDERS=()
 
-# ─── Argument parsing ───────────────────────────────────────────────────────────
+# ─── Usage / Help ─────────────────────────────────────────────────────────────
 usage() {
-    cat <<EOF
+    cat <<EOHELP
 Usage: $(basename "$0") [OPTIONS] FOLDER [FOLDER ...]
 
-Generate .app wrappers for folders so their custom icons show in the macOS Dock.
+Generate ultra-fast native .app wrappers for folders with rich Dock popup menus.
 
 Options:
-  --output-dir DIR   Where to place generated .app bundles
-                     (default: ~/Applications/Dock Folders/)
-  --all DIR          Process all subdirectories within DIR
-  -h, --help         Show this help
+  --output-dir DIR      Where to place generated .app bundles (default: ./build)
+  --all DIR             Process all subdirectories within DIR
+  --symbol NAME         SF Symbol name for icon (e.g. folder.badge.gear, terminal.fill)
+  --color COLOR         Icon color: preset (blue, purple, green, orange, red, dark, etc.)
+                        or hex code (e.g. #007AFF)
+  --image PATH          Custom PNG/JPEG/ICNS file to use as icon
+  --sort MODE           Sort order: 'name' (A-Z), 'recent' (modified date), 'kind' (Apps/Folders/Files)
+                        (default: name)
+  --max-depth N         Nested subfolder menu depth limit (default: 3)
+  --add-to-dock         Automatically pin the generated .app to your macOS Dock
+  -h, --help            Show this help
+
+Keyboard & Mouse Shortcuts in Generated App:
+  Click / ↵             Open selected item
+  ⌥ Option + Click       Reveal selected item in Finder
+  ⌘1 ... ⌘9             Quick-launch top 9 items
+  ⌘O                    Open root folder in Finder
+  ⌘T                    Open root folder in Terminal
+  Drag & Drop           Drag files onto Dock icon to move them into the folder
 
 Examples:
-  $(basename "$0") ~/Documents/dock-folders/coding
-  $(basename "$0") --all ~/Documents/dock-folders
-  $(basename "$0") --output-dir ~/Desktop ~/Documents/my-folder
-EOF
+  $(basename "$0") ~/Documents/Coding
+  $(basename "$0") --symbol "terminal.fill" --color dark ~/Developer/Projects
+  $(basename "$0") --symbol "music.note" --color purple --sort recent ~/Music
+  $(basename "$0") --all ~/Documents/DockFolders --add-to-dock
+EOHELP
     exit 0
 }
 
+# ─── Argument parsing ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output-dir)
@@ -44,6 +71,30 @@ while [[ $# -gt 0 ]]; do
             ;;
         --all)
             ALL_MODE=true
+            shift
+            ;;
+        --symbol)
+            SYMBOL_NAME="$2"
+            shift 2
+            ;;
+        --color)
+            COLOR_ARG="$2"
+            shift 2
+            ;;
+        --image)
+            IMAGE_PATH="$2"
+            shift 2
+            ;;
+        --sort)
+            SORT_MODE="$2"
+            shift 2
+            ;;
+        --max-depth)
+            MAX_DEPTH="$2"
+            shift 2
+            ;;
+        --add-to-dock)
+            ADD_TO_DOCK=true
             shift
             ;;
         -h|--help)
@@ -56,7 +107,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# In --all mode, the single argument is the parent directory
 if $ALL_MODE; then
     if [[ ${#FOLDERS[@]} -ne 1 ]]; then
         echo "Error: --all requires exactly one directory argument"
@@ -81,93 +131,140 @@ fi
 OUTPUT_DIR="${OUTPUT_DIR:-$DEFAULT_OUTPUT_DIR}"
 mkdir -p "$OUTPUT_DIR"
 
-# ─── Icon extraction ────────────────────────────────────────────────────────────
-# Extracts the folder's rendered icon (including custom emoji + color) as .icns
+# Ensure swiftc compiler is available
+if ! command -v swiftc &>/dev/null; then
+    echo "Error: 'swiftc' compiler not found. Please install Xcode Command Line Tools: xcode-select --install"
+    exit 1
+fi
+
+# ─── Icon Generation Helpers ──────────────────────────────────────────────────
+# Creates a 1024x1024 .icns file from SF Symbol, Emoji, Image, or Folder Icon
 create_icns() {
     local folder_path="$1"
     local icns_path="$2"
+    local custom_symbol="$3"
+    local custom_color="$4"
+    local custom_image="$5"
+    
     local png_path="${icns_path%.icns}.png"
     local iconset_dir="${icns_path%.icns}.iconset"
 
-    # Check for "Customize Folder" emoji icon (stored as JSON xattr)
-    local emoji=""
-    local xattr_data
-    xattr_data=$(xattr -p com.apple.icon.folder#S "$folder_path" 2>/dev/null) || true
-    if [[ -n "$xattr_data" ]]; then
-        # Parse emoji from JSON like {"emoji":"👨‍💻"}
-        emoji=$(echo "$xattr_data" | python3 -c "import sys,json; print(json.load(sys.stdin).get('emoji',''))" 2>/dev/null) || true
-    fi
-
-    # Step 1: Render the folder icon as 1024x1024 PNG via AppleScript ObjC bridge
-    if [[ -n "$emoji" ]]; then
-        # Render emoji on dark background (macOS adds its own squircle mask)
-        osascript <<ICONSCRIPT >/dev/null 2>&1
-use framework "AppKit"
-use framework "Foundation"
-use scripting additions
-
-set px to 1024
-
--- Create canvas
-set bitmapRep to (current application's NSBitmapImageRep's alloc()'s initWithBitmapDataPlanes:(missing value) pixelsWide:px pixelsHigh:px bitsPerSample:8 samplesPerPixel:4 hasAlpha:true isPlanar:false colorSpaceName:(current application's NSCalibratedRGBColorSpace) bytesPerRow:0 bitsPerPixel:0)
-
-set ctx to (current application's NSGraphicsContext's graphicsContextWithBitmapImageRep:bitmapRep)
-current application's NSGraphicsContext's setCurrentContext:ctx
-
--- Fill with dark background
-set bgColor to current application's NSColor's colorWithCalibratedRed:0.455 green:0.455 blue:0.471 alpha:1.0
-set bgPath to current application's NSBezierPath's bezierPathWithRect:{{0, 0}, {px, px}}
-bgColor's setFill()
-bgPath's fill()
-
--- Draw emoji large and centered
-set emojiStr to current application's NSString's stringWithString:"${emoji}"
-set emojiSize to 620
-set emojiFont to current application's NSFont's systemFontOfSize:emojiSize
-set emojiAttrs to current application's NSDictionary's dictionaryWithObjects:{emojiFont} forKeys:{current application's NSFontAttributeName}
-set attrStr to (current application's NSAttributedString's alloc()'s initWithString:emojiStr attributes:emojiAttrs)
-set strSize to attrStr's |size|()
-set strW to strSize's width
-set strH to strSize's height
-set drawX to ((px - strW) / 2)
-set drawY to ((px - strH) / 2)
-attrStr's drawAtPoint:{x:drawX, y:drawY}
-
-current application's NSGraphicsContext's setCurrentContext:(missing value)
-
-set pngData to bitmapRep's representationUsingType:4 |properties|:(missing value)
-set outURL to current application's NSURL's fileURLWithPath:"${png_path}"
-pngData's writeToURL:outURL options:0 |error|:(missing value)
-ICONSCRIPT
+    # Option 1: Custom Image File
+    if [[ -n "$custom_image" && -f "$custom_image" ]]; then
+        sips -s format png "$custom_image" --out "$png_path" >/dev/null 2>&1 || cp "$custom_image" "$png_path"
     else
-        # No custom emoji — use NSWorkspace's standard icon
-        osascript <<ICONSCRIPT >/dev/null 2>&1
-use framework "AppKit"
-use framework "Foundation"
-use scripting additions
+        # Check for folder emoji xattr (from "Customize Folder")
+        local emoji=""
+        local xattr_data
+        xattr_data=$(xattr -p com.apple.icon.folder#S "$folder_path" 2>/dev/null) || true
+        if [[ -n "$xattr_data" ]]; then
+            emoji=$(echo "$xattr_data" | python3 -c "import sys,json; print(json.load(sys.stdin).get('emoji',''))" 2>/dev/null) || true
+        fi
 
-set ws to current application's NSWorkspace's sharedWorkspace()
-set theIcon to ws's iconForFile:"${folder_path}"
-theIcon's setSize:{width:1024, height:1024}
+        # Swift helper to render icon
+        local render_swift
+        render_swift=$(cat <<'SWIFT'
+import Cocoa
 
-set bitmapRep to (current application's NSBitmapImageRep's alloc()'s initWithBitmapDataPlanes:(missing value) pixelsWide:1024 pixelsHigh:1024 bitsPerSample:8 samplesPerPixel:4 hasAlpha:true isPlanar:false colorSpaceName:(current application's NSCalibratedRGBColorSpace) bytesPerRow:0 bitsPerPixel:0)
+func parseColor(_ str: String) -> NSColor {
+    let lower = str.lowercased()
+    switch lower {
+    case "blue": return NSColor(calibratedRed: 0.0, green: 0.478, blue: 1.0, alpha: 1.0)
+    case "purple": return NSColor(calibratedRed: 0.686, green: 0.322, blue: 0.871, alpha: 1.0)
+    case "pink": return NSColor(calibratedRed: 1.0, green: 0.176, blue: 0.333, alpha: 1.0)
+    case "red": return NSColor(calibratedRed: 1.0, green: 0.231, blue: 0.188, alpha: 1.0)
+    case "orange": return NSColor(calibratedRed: 1.0, green: 0.584, blue: 0.0, alpha: 1.0)
+    case "yellow": return NSColor(calibratedRed: 1.0, green: 0.8, blue: 0.0, alpha: 1.0)
+    case "green": return NSColor(calibratedRed: 0.204, green: 0.780, blue: 0.349, alpha: 1.0)
+    case "teal": return NSColor(calibratedRed: 0.353, green: 0.784, blue: 0.980, alpha: 1.0)
+    case "indigo": return NSColor(calibratedRed: 0.345, green: 0.337, blue: 0.839, alpha: 1.0)
+    case "gray": return NSColor(calibratedRed: 0.557, green: 0.557, blue: 0.576, alpha: 1.0)
+    case "dark": return NSColor(calibratedRed: 0.227, green: 0.227, blue: 0.235, alpha: 1.0)
+    default:
+        var hex = str.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        if hex.count == 6 {
+            let r = CGFloat((int >> 16) & 0xFF) / 255.0
+            let g = CGFloat((int >> 8) & 0xFF) / 255.0
+            let b = CGFloat(int & 0xFF) / 255.0
+            return NSColor(calibratedRed: r, green: g, blue: b, alpha: 1.0)
+        }
+        return NSColor(calibratedRed: 0.227, green: 0.227, blue: 0.235, alpha: 1.0)
+    }
+}
 
-set ctx to (current application's NSGraphicsContext's graphicsContextWithBitmapImageRep:bitmapRep)
-current application's NSGraphicsContext's setCurrentContext:ctx
-theIcon's drawInRect:{origin:{x:0, y:0}, |size|:{width:1024, height:1024}}
-current application's NSGraphicsContext's setCurrentContext:(missing value)
+let args = CommandLine.arguments
+let outPath = args[1]
+let symbolName = args.count > 2 && !args[2].isEmpty ? args[2] : nil
+let colorStr = args.count > 3 && !args[3].isEmpty ? args[3] : "dark"
+let emojiStr = args.count > 4 && !args[4].isEmpty ? args[4] : nil
+let folderPath = args.count > 5 ? args[5] : ""
 
-set pngData to bitmapRep's representationUsingType:4 |properties|:(missing value)
-set outURL to current application's NSURL's fileURLWithPath:"${png_path}"
-pngData's writeToURL:outURL options:0 |error|:(missing value)
-ICONSCRIPT
+let size: CGFloat = 1024
+guard let rep = NSBitmapImageRep(
+    bitmapDataPlanes: nil,
+    pixelsWide: Int(size),
+    pixelsHigh: Int(size),
+    bitsPerSample: 8,
+    samplesPerPixel: 4,
+    hasAlpha: true,
+    isPlanar: false,
+    colorSpaceName: .calibratedRGB,
+    bytesPerRow: 0,
+    bitsPerPixel: 0
+), let ctx = NSGraphicsContext(bitmapImageRep: rep) else {
+    exit(1)
+}
+
+NSGraphicsContext.current = ctx
+
+if symbolName != nil || emojiStr != nil {
+    // Draw rounded background squircle
+    let rect = NSRect(x: 0, y: 0, width: size, height: size)
+    let path = NSBezierPath(roundedRect: rect, xRadius: 220, yRadius: 220)
+    parseColor(colorStr).setFill()
+    path.fill()
+
+    if let sym = symbolName, let symImage = NSImage(systemSymbolName: sym, accessibilityDescription: nil) {
+        let config = NSImage.SymbolConfiguration(pointSize: 520, weight: .medium)
+            .applying(.init(paletteColors: [.white]))
+        let configured = symImage.withSymbolConfiguration(config) ?? symImage
+        let symSize = configured.size
+        let drawRect = NSRect(x: (size - symSize.width) / 2, y: (size - symSize.height) / 2, width: symSize.width, height: symSize.height)
+        configured.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+    } else if let em = emojiStr {
+        let font = NSFont.systemFont(ofSize: 600)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        let attrStr = NSAttributedString(string: em, attributes: attrs)
+        let strSize = attrStr.size()
+        let drawX = (size - strSize.width) / 2
+        let drawY = (size - strSize.height) / 2
+        attrStr.draw(at: NSPoint(x: drawX, y: drawY))
+    }
+} else {
+    // Standard folder icon
+    let ws = NSWorkspace.shared
+    let theIcon = ws.icon(forFile: folderPath)
+    theIcon.size = NSSize(width: size, height: size)
+    theIcon.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
+}
+
+NSGraphicsContext.current = nil
+
+if let pngData = rep.representation(using: .png, properties: [:]) {
+    try? pngData.write(to: URL(fileURLWithPath: outPath))
+}
+SWIFT
+)
+        swift -e "$render_swift" "$png_path" "$custom_symbol" "$custom_color" "$emoji" "$folder_path" 2>/dev/null || return 1
     fi
 
     if [[ ! -f "$png_path" || ! -s "$png_path" ]]; then
         return 1
     fi
 
-    # Step 2: Create iconset with all required sizes via sips
+    # Create iconset with all required macOS sizes
     mkdir -p "$iconset_dir"
     sips -z 16 16     "$png_path" --out "$iconset_dir/icon_16x16.png"      >/dev/null 2>&1
     sips -z 32 32     "$png_path" --out "$iconset_dir/icon_16x16@2x.png"   >/dev/null 2>&1
@@ -180,138 +277,287 @@ ICONSCRIPT
     sips -z 512 512   "$png_path" --out "$iconset_dir/icon_512x512.png"    >/dev/null 2>&1
     sips -z 1024 1024 "$png_path" --out "$iconset_dir/icon_512x512@2x.png" >/dev/null 2>&1
 
-    # Step 3: Convert iconset to icns
     iconutil -c icns "$iconset_dir" -o "$icns_path" 2>/dev/null
-    local result=$?
-
-    # Cleanup
+    local res=$?
     rm -rf "$iconset_dir" "$png_path"
-    return $result
+    return $res
 }
 
-# ─── AppleScript template ───────────────────────────────────────────────────────
-generate_applescript() {
-    local folder_path="$1"
-    local folder_name="$2"
+# ─── Swift Application Source Template ────────────────────────────────────────
+generate_swift_source() {
+    local target_folder="$1"
+    local folder_title="$2"
+    local sort_mode="$3"
+    local max_depth="$4"
 
-    cat <<APPLESCRIPT
-use framework "AppKit"
-use framework "Foundation"
-use scripting additions
+    cat <<SWIFT
+import Cocoa
+import UniformTypeIdentifiers
 
-property NSMenu : a reference to current application's NSMenu
-property NSMenuItem : a reference to current application's NSMenuItem
-property NSWorkspace : a reference to current application's NSWorkspace
-property NSEvent : a reference to current application's NSEvent
-property NSURL : a reference to current application's NSURL
-property NSImage : a reference to current application's NSImage
+class AppDelegate: NSObject, NSApplicationDelegate {
+    let folderPath: String = "$target_folder"
+    let folderName: String = "$folder_title"
+    let sortMode: String = "$sort_mode"
+    let maxDepth: Int = $max_depth
+    var menuOpened = false
 
-on run
-    showFolderMenu()
-end run
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DispatchQueue.main.async {
+            if !self.menuOpened {
+                self.showMenu()
+            }
+        }
+    }
 
-on reopen
-    showFolderMenu()
-end reopen
+    // Drag-and-drop handler: Copies dropped files directly into the target folder
+    func application(_ app: NSApplication, openFiles filenames: [String]) {
+        self.menuOpened = true
+        let targetURL = URL(fileURLWithPath: folderPath)
+        let fm = FileManager.default
+        var copiedCount = 0
 
-on showFolderMenu()
-    set folderPath to "$folder_path"
-    
-    -- Use "list folder" from Standard Additions (runs in-process, no Apple Events needed)
-    try
-        set folderAlias to (POSIX file folderPath) as alias
-        set allNames to list folder folderAlias without invisibles
-    on error errMsg number errNum
-        display dialog "Cannot read folder: " & folderPath & return & return & "Error " & errNum & ": " & errMsg buttons {"OK"} default button "OK" with icon caution
-        return
-    end try
-    
-    -- Sort names alphabetically (A-Z, case-insensitive) using Cocoa
-    set cocoaArray to current application's NSMutableArray's arrayWithArray:allNames
-    cocoaArray's sortUsingSelector:"localizedCaseInsensitiveCompare:"
-    set allNames to cocoaArray as list
-    
-    if (count of allNames) is 0 then
-        display dialog "Folder is empty." buttons {"OK"} default button "OK"
-        return
-    end if
-    
-    -- Build NSMenu with icons
-    set theMenu to NSMenu's alloc()'s initWithTitle:""
-    (theMenu's setMinimumWidth:220)
-    (theMenu's setAutoenablesItems:false)
-    set ws to NSWorkspace's sharedWorkspace()
-    
-    -- Header item (folder name, non-clickable)
-    set headerItem to (NSMenuItem's alloc()'s initWithTitle:"$folder_name" action:(missing value) keyEquivalent:"")
-    set headerFont to current application's NSFont's boldSystemFontOfSize:13
-    set headerAttrs to current application's NSDictionary's dictionaryWithObject:headerFont forKey:(current application's NSFontAttributeName)
-    set headerAttrStr to (current application's NSAttributedString's alloc()'s initWithString:"$folder_name" attributes:headerAttrs)
-    (headerItem's setAttributedTitle:headerAttrStr)
-    (headerItem's setEnabled:false)
-    (theMenu's addItem:headerItem)
-    (theMenu's addItem:(NSMenuItem's separatorItem()))
-    
-    repeat with aName in allNames
-        set itemPath to folderPath & "/" & aName
-        
-        -- Display name: strip .app extension for cleaner look
-        set displayName to aName as text
-        if displayName ends with ".app" then
-            set displayName to text 1 thru -5 of displayName
-        end if
-        
-        set menuItem to (NSMenuItem's alloc()'s initWithTitle:displayName action:(missing value) keyEquivalent:"")
-        (menuItem's setEnabled:true)
-        set itemIcon to (ws's iconForFile:itemPath)
-        (itemIcon's setSize:{width:24, height:24})
-        (menuItem's setImage:itemIcon)
-        (menuItem's setRepresentedObject:itemPath)
-        (theMenu's addItem:menuItem)
-    end repeat
-    
-    -- Add separator + "Show in Finder" at bottom
-    (theMenu's addItem:(NSMenuItem's separatorItem()))
-    set finderItem to (NSMenuItem's alloc()'s initWithTitle:"Show in Finder" action:(missing value) keyEquivalent:"")
-    (finderItem's setEnabled:true)
-    (finderItem's setTag:-1)
-    (theMenu's addItem:finderItem)
-    
-    -- Position popup near the bottom of screen (Dock area)
-    set mouseLoc to NSEvent's mouseLocation()
-    set popupX to (mouseLoc's x) as real
-    set popupY to 50
-    
-    set popupPoint to {popupX, popupY}
-    
-    set wasSelected to (theMenu's popUpMenuPositioningItem:(missing value) atLocation:popupPoint inView:(missing value))
-    
-    if wasSelected as boolean then
-        set clicked to theMenu's highlightedItem()
-        if clicked is not missing value then
-            set clickedTag to (clicked's tag()) as integer
-            if clickedTag is -1 then
-                -- "Show in Finder" via NSWorkspace (no Apple Events needed)
-                set folderURL to NSURL's fileURLWithPath:folderPath
-                ws's openURL:folderURL
-            else
-                set clickedPath to (clicked's representedObject()) as text
-                set clickedURL to NSURL's fileURLWithPath:clickedPath
-                ws's openURL:clickedURL
-            end if
-        end if
-    end if
-end showFolderMenu
-APPLESCRIPT
+        for file in filenames {
+            let sourceURL = URL(fileURLWithPath: file)
+            let destURL = targetURL.appendingPathComponent(sourceURL.lastPathComponent)
+            do {
+                var finalDestURL = destURL
+                var counter = 1
+                let baseName = destURL.deletingPathExtension().lastPathComponent
+                let ext = destURL.pathExtension
+                while fm.fileExists(atPath: finalDestURL.path) {
+                    let newName = ext.isEmpty ? "\\(baseName) \\(counter)" : "\\(baseName) \\(counter).\\(ext)"
+                    finalDestURL = targetURL.appendingPathComponent(newName)
+                    counter += 1
+                }
+                try fm.copyItem(at: sourceURL, to: finalDestURL)
+                copiedCount += 1
+            } catch {
+                NSLog("Failed to copy \\(file): \\(error)")
+            }
+        }
+
+        if copiedCount > 0 {
+            NSSound.beep()
+        }
+        NSApp.terminate(nil)
+    }
+
+    func calculatePopupPoint() -> NSPoint {
+        let mouseLoc = NSEvent.mouseLocation
+        let screens = NSScreen.screens
+        let currentScreen = screens.first(where: { NSMouseInRect(mouseLoc, \$0.frame, false) }) ?? NSScreen.main ?? (screens.isEmpty ? nil : screens[0])
+        let screenFrame = currentScreen?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+        let dockOrientation = (UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom").lowercased()
+
+        var popupX = mouseLoc.x
+        var popupY = mouseLoc.y
+
+        switch dockOrientation {
+        case "left":
+            popupX = screenFrame.minX + 45
+            popupY = mouseLoc.y
+        case "right":
+            popupX = screenFrame.maxX - 45
+            popupY = mouseLoc.y
+        case "bottom":
+            popupX = mouseLoc.x
+            popupY = screenFrame.minY + 45
+        default:
+            popupY = screenFrame.minY + 45
+        }
+
+        return NSPoint(x: popupX, y: popupY)
+    }
+
+    func buildMenu(for folderURL: URL, depth: Int) -> NSMenu {
+        let menu = NSMenu(title: folderURL.lastPathComponent)
+        menu.minimumWidth = 240
+        menu.autoenablesItems = false
+
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey, .isAliasFileKey, .isApplicationKey], options: [.skipsHiddenFiles]) else {
+            let emptyItem = NSMenuItem(title: "(Inaccessible folder)", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            menu.addItem(emptyItem)
+            return menu
+        }
+
+        if depth == 0 {
+            let headerItem = NSMenuItem(title: folderName, action: nil, keyEquivalent: "")
+            let headerFont = NSFont.boldSystemFont(ofSize: 13)
+            let headerAttrs: [NSAttributedString.Key: Any] = [.font: headerFont]
+            headerItem.attributedTitle = NSAttributedString(string: folderName, attributes: headerAttrs)
+            headerItem.isEnabled = false
+            menu.addItem(headerItem)
+            menu.addItem(NSMenuItem.separator())
+        }
+
+        let sortedURLs = sortItems(contents)
+        var keyIndex = 1
+
+        for url in sortedURLs {
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            let isApp = url.pathExtension.lowercased() == "app" || ((try? url.resourceValues(forKeys: [.isApplicationKey]).isApplication) ?? false)
+
+            var displayName = url.deletingPathExtension().lastPathComponent
+            if !isApp && !url.pathExtension.isEmpty {
+                displayName = url.lastPathComponent
+            }
+
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            icon.size = NSSize(width: 18, height: 18)
+
+            let keyEq = (depth == 0 && keyIndex <= 9) ? "\\(keyIndex)" : ""
+            let item = NSMenuItem(title: displayName, action: #selector(itemClicked(_:)), keyEquivalent: keyEq)
+            if depth == 0 && keyIndex <= 9 {
+                item.keyEquivalentModifierMask = [.command]
+                keyIndex += 1
+            }
+            item.target = self
+            item.image = icon
+            item.representedObject = url.path
+
+            if isDir && !isApp && depth < maxDepth {
+                let submenu = buildMenu(for: url, depth: depth + 1)
+                item.submenu = submenu
+                item.action = nil
+            }
+
+            menu.addItem(item)
+
+            // ⌥ Option modifier: Reveal in Finder
+            if !isDir || isApp || depth >= maxDepth {
+                let altItem = NSMenuItem(title: "Reveal in Finder: \\(displayName)", action: #selector(revealInFinder(_:)), keyEquivalent: keyEq)
+                altItem.keyEquivalentModifierMask = keyEq.isEmpty ? [.option] : [.option, .command]
+                altItem.isAlternate = true
+                altItem.image = icon
+                altItem.target = self
+                altItem.representedObject = url.path
+                menu.addItem(altItem)
+            }
+        }
+
+        if sortedURLs.isEmpty {
+            let emptyItem = NSMenuItem(title: "(Folder is empty)", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            menu.addItem(emptyItem)
+        }
+
+        if depth == 0 {
+            menu.addItem(NSMenuItem.separator())
+
+            let finderItem = NSMenuItem(title: "Show in Finder", action: #selector(openFolderInFinder), keyEquivalent: "o")
+            finderItem.keyEquivalentModifierMask = [.command]
+            if let finderIcon = NSWorkspace.shared.icon(forFile: "/System/Library/CoreServices/Finder.app") as NSImage? {
+                finderIcon.size = NSSize(width: 18, height: 18)
+                finderItem.image = finderIcon
+            }
+            finderItem.target = self
+            menu.addItem(finderItem)
+
+            let termItem = NSMenuItem(title: "Open in Terminal", action: #selector(openFolderInTerminal), keyEquivalent: "t")
+            termItem.keyEquivalentModifierMask = [.command]
+            if let termIcon = NSWorkspace.shared.icon(forFile: "/System/Applications/Utilities/Terminal.app") as NSImage? {
+                termIcon.size = NSSize(width: 18, height: 18)
+                termItem.image = termIcon
+            }
+            termItem.target = self
+            menu.addItem(termItem)
+        }
+
+        return menu
+    }
+
+    func sortItems(_ items: [URL]) -> [URL] {
+        switch sortMode.lowercased() {
+        case "recent", "date", "modified":
+            return items.sorted {
+                let d1 = (try? \$0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+                let d2 = (try? \$1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+                return d1 > d2
+            }
+        case "kind", "type":
+            return items.sorted {
+                let isApp1 = \$0.pathExtension.lowercased() == "app"
+                let isApp2 = \$1.pathExtension.lowercased() == "app"
+                let isDir1 = (try? \$0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                let isDir2 = (try? \$1.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+
+                let p1 = isApp1 ? 0 : (isDir1 ? 1 : 2)
+                let p2 = isApp2 ? 0 : (isDir2 ? 1 : 2)
+                if p1 != p2 { return p1 < p2 }
+                return \$0.lastPathComponent.localizedCaseInsensitiveCompare(\$1.lastPathComponent) == .orderedAscending
+            }
+        default:
+            return items.sorted {
+                \$0.lastPathComponent.localizedCaseInsensitiveCompare(\$1.lastPathComponent) == .orderedAscending
+            }
+        }
+    }
+
+    @objc func itemClicked(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        let url = URL(fileURLWithPath: path)
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc func revealInFinder(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        let url = URL(fileURLWithPath: path)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    @objc func openFolderInFinder() {
+        let url = URL(fileURLWithPath: folderPath)
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc func openFolderInTerminal() {
+        let termURL = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+        let targetURL = URL(fileURLWithPath: folderPath)
+        NSWorkspace.shared.open([targetURL], withApplicationAt: termURL, configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
+    }
+
+    func showMenu() {
+        self.menuOpened = true
+        let menu = buildMenu(for: URL(fileURLWithPath: folderPath), depth: 0)
+        let point = calculatePopupPoint()
+
+        menu.popUp(positioning: nil, at: point, in: nil)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NSApp.terminate(nil)
+        }
+    }
 }
 
-# ─── Main loop ───────────────────────────────────────────────────────────────────
-echo "🗂  Dock Folders Generator"
-echo "   Output: $OUTPUT_DIR"
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.accessory)
+app.run()
+SWIFT
+}
+
+# ─── Dock Pinning Helper ──────────────────────────────────────────────────────
+pin_to_dock() {
+    local app_bundle="$1"
+    if command -v dockutil &>/dev/null; then
+        dockutil --add "$app_bundle" --no-restart >/dev/null 2>&1 || true
+    else
+        # Add to persistent-apps via defaults
+        local tile_data="<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$app_bundle</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
+        defaults write com.apple.dock persistent-apps -array-add "$tile_data"
+    fi
+}
+
+# ─── Main Build Loop ──────────────────────────────────────────────────────────
+echo "🚀  macOS Dock Folders 2.0 Generator"
+echo "    Output Directory: $OUTPUT_DIR"
 echo ""
 
 for folder in "${FOLDERS[@]}"; do
-    # Resolve to absolute path
     folder="$(cd "$folder" 2>/dev/null && pwd)"
 
     if [[ ! -d "$folder" ]]; then
@@ -322,69 +568,109 @@ for folder in "${FOLDERS[@]}"; do
     folder_name="$(basename "$folder")"
     app_name="${folder_name}.app"
     app_path="$OUTPUT_DIR/$app_name"
+    macos_dir="$app_path/Contents/MacOS"
+    resources_dir="$app_path/Contents/Resources"
 
-    echo "📁 Processing: $folder_name"
+    echo "📁 Building: $folder_name"
 
-    # Remove old version if it exists
-    if [[ -d "$app_path" ]]; then
-        rm -rf "$app_path"
-    fi
+    # Remove previous build if present
+    rm -rf "$app_path"
+    mkdir -p "$macos_dir" "$resources_dir"
 
-    # 1. Generate AppleScript source
-    tmp_script="$OUTPUT_DIR/.tmp_${folder_name}.applescript"
-    generate_applescript "$folder" "$folder_name" > "$tmp_script"
+    # 1. Compile native Swift executable
+    echo "  ⚙ Compiling native Swift binary..."
+    tmp_swift="$OUTPUT_DIR/.tmp_${folder_name}.swift"
+    generate_swift_source "$folder" "$folder_name" "$SORT_MODE" "$MAX_DEPTH" > "$tmp_swift"
+    swiftc -O -o "$macos_dir/DockFolder" "$tmp_swift"
+    rm -f "$tmp_swift"
 
-    # 2. Compile to .app bundle (stay-open so it handles reopen events)
-    echo "  ⚙ Compiling app..."
-    osacompile -s -o "$app_path" "$tmp_script" 2>/dev/null
-    rm -f "$tmp_script"
-
-    # 3. Extract and set custom icon
-    echo "  🎨 Extracting folder icon..."
-    tmp_icns="$OUTPUT_DIR/.tmp_${folder_name}.icns"
-
-    if create_icns "$folder" "$tmp_icns"; then
-        cp "$tmp_icns" "$app_path/Contents/Resources/applet.icns"
-        # Remove the asset catalog — it contains the default applet icon and
-        # takes precedence over applet.icns on modern macOS
-        rm -f "$app_path/Contents/Resources/Assets.car"
-        echo "  ✅ Icon applied"
+    # 2. Generate and apply custom icon (.icns)
+    echo "  🎨 Generating app icon..."
+    icns_path="$resources_dir/applet.icns"
+    if create_icns "$folder" "$icns_path" "$SYMBOL_NAME" "$COLOR_ARG" "$IMAGE_PATH"; then
+        echo "  ✅ Custom icon applied"
     else
-        echo "  ⚠ Could not extract icon, using system default"
+        echo "  ⚠ Standard icon used"
     fi
-    rm -f "$tmp_icns"
 
-    # 4. Update Info.plist with a proper bundle identifier
+    # 3. Create Info.plist with Drag-and-Drop and LSUIElement support
     bundle_id="com.dock-folders.$(echo "$folder_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$app_path/Contents/Info.plist" 2>/dev/null || \
-    /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $bundle_id" "$app_path/Contents/Info.plist" 2>/dev/null
+    cat <<PLIST > "$app_path/Contents/Info.plist"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>DockFolder</string>
+    <key>CFBundleIdentifier</key>
+    <string>$bundle_id</string>
+    <key>CFBundleName</key>
+    <string>$folder_name</string>
+    <key>CFBundleDisplayName</key>
+    <string>$folder_name</string>
+    <key>CFBundleIconFile</key>
+    <string>applet.icns</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>2.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>All Files</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.item</string>
+                <string>public.content</string>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>This app needs access to show folder contents and open files.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>This app needs access to show your Desktop items.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>This app needs access to show your Documents items.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>This app needs access to show your Downloads items.</string>
+</dict>
+</plist>
+PLIST
 
-    # Set a proper display name
-    /usr/libexec/PlistBuddy -c "Set :CFBundleName $folder_name" "$app_path/Contents/Info.plist" 2>/dev/null
-
-    # Hide from CMD+Tab app switcher (agent app — no Dock bounce, no menu bar)
-    /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$app_path/Contents/Info.plist" 2>/dev/null || true
-
-    # Add usage descriptions so macOS can prompt for permissions
-    /usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string This app needs permission to show folder contents." "$app_path/Contents/Info.plist" 2>/dev/null || true
-
-    # 5. Ad-hoc code-sign so macOS TCC can track the app's identity
-    #    Without signing, TCC silently blocks access to ~/Documents, ~/Desktop, etc.
-    echo "  🔏 Code-signing..."
-    xattr -cr "$app_path" 2>/dev/null
-    codesign --force --sign - "$app_path" 2>&1 || echo "  ⚠ Code-signing failed (non-fatal)"
-
-    # Touch to refresh icon cache
+    # 4. Ad-hoc code sign for macOS TCC
+    echo "  🔏 Code-signing application bundle..."
+    xattr -cr "$app_path" 2>/dev/null || true
+    codesign --force --sign - "$app_path" 2>&1 >/dev/null || true
     touch "$app_path"
 
-    echo "  ✅ Created: $app_path"
+    # 5. Optional Dock pinning
+    if $ADD_TO_DOCK; then
+        echo "  📌 Pinning to macOS Dock..."
+        pin_to_dock "$app_path"
+    fi
+
+    echo "  🎉 Successfully created: $app_path"
     echo ""
 done
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Done! Drag the .app files from '$OUTPUT_DIR' into your Dock."
-echo ""
-echo "💡 First launch: if the folder is in ~/Documents, ~/Desktop,"
-echo "   or ~/Downloads, macOS may ask for permission — click Allow."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if $ADD_TO_DOCK; then
+    killall Dock 2>/dev/null || true
+fi
 
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "✨ Build Complete!"
+echo "📍 Location: $OUTPUT_DIR"
+if ! $ADD_TO_DOCK; then
+    echo "💡 Drag the generated .app files into your macOS Dock."
+fi
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

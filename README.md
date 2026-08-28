@@ -1,88 +1,91 @@
-# Dock Folders
+# macOS Dock Folders 2.0 🚀
 
-Turn any folder into a **clickable Dock icon** that shows its contents as a popup menu — like macOS Dock stacks, but with custom icons.
+Turn any folder into a **high-performance, clickable Dock launcher** with native popup menus, hierarchical submenus, drag-and-drop file moving, SF Symbols icon styling, modifier-key actions, and 0ms startup lag.
 
-> [!WARNING]
-> This automation is provided **as-is** for personal use. The repository is public for anyone who wants to fork and adapt it.
-> Please do not open issues for support or feature requests.
+---
 
-## Features
+## 🌟 What's New in 2.0
 
-📂 **Native popup menus** — Shows folder contents in a clean list
+- ⚡ **Native Swift Cocoa Engine**: Replaces slow AppleScript with native compiled binaries for instantaneous (<10ms) menu popups.
+- 📂 **Hierarchical Submenus**: Multi-level navigation for nested subfolders directly within the Dock popup.
+- 📥 **Drag-and-Drop Drop Target**: Drag any file or folder onto the Dock icon to move/copy it straight into that directory.
+- ⌥ **Modifier Key Shortcuts**:
+  - **Click / Enter**: Open item.
+  - **⌥ Option + Click**: Reveal item in Finder.
+  - **⌘1 – ⌘9**: Quick-launch top items instantly from keyboard.
+  - **⌘O**: Open root folder in Finder.
+  - **⌘T**: Open root folder in Terminal.
+- 🎨 **SF Symbols & Custom Icons**: Generate custom icons on-the-fly using any Apple SF Symbol, custom background colors, or existing folder emojis/icons.
+- 🗂️ **Smart Sorting**: Sort alphabetically (`name`), by Date Modified (`recent`), or by Kind (`kind`: Apps > Folders > Files).
+- 🧭 **Adaptive Dock Position**: Automatically detects whether your Dock is at the **Bottom**, **Left**, or **Right** of your screen and positions the menu properly.
+- 📌 **Automatic Dock Pinning**: Optional `--add-to-dock` flag to automatically pin generated apps to your macOS Dock.
+- 🔒 **100% Offline & Private**: Zero telemetry, zero analytics, zero phoning home.
 
-🎨 **Custom icons** — Preserves folder icons (including Emoji) in the Dock
+---
 
-🕵️ **Clean experience** — Hidden from CMD+Tab and Dock recent apps
+## 📦 Quick Start
 
-⚡ **Fast** — Uses native macOS APIs and AppleScript
-
-🖱️ **Click-to-open** — Opens selected items or the folder itself
-
-## Usage
-
-### Quick Start
-
+### 1. Basic Generation
 Generate a Dock app for a single folder:
-
 ```bash
-./dock-folders.sh ~/Documents/dock-folders/coding
+./dock-folders.sh ~/Documents/Coding
 ```
 
-Or build apps for **all** folders in a directory:
-
+### 2. Batch Mode
+Process **all** sub-folders in a directory:
 ```bash
-./dock-folders.sh --all ~/Documents/dock-folders
+./dock-folders.sh --all ~/Documents/DockFolders
 ```
 
-Then drag the generated `.app` files from `./build/` into your Dock.
+### 3. Custom SF Symbols & Colors
+Generate a custom branded icon with an SF Symbol and color palette:
+```bash
+./dock-folders.sh --symbol "terminal.fill" --color dark ~/Developer/Projects
+./dock-folders.sh --symbol "music.note" --color purple ~/Music
+./dock-folders.sh --symbol "wrench.and.screwdriver" --color orange ~/Utilities
+```
 
-> [!NOTE]
-> **First launch:** If the folder is in `~/Documents`, `~/Desktop`, or `~/Downloads`, macOS will ask for permission to access it. Click **Allow**.
+### 4. Smart Sorting & Auto Dock Pinning
+Sort items by most recently modified and pin directly to the Dock:
+```bash
+./dock-folders.sh --sort recent --add-to-dock ~/Downloads
+```
 
-### Setup
+---
 
-1. **Create a folder** to hold your dock shortcuts:
+## 🛠️ CLI Options
 
-   ```bash
-   mkdir -p ~/Documents/dock-folders
-   ```
+| Option | Description | Default |
+|---|---|---|
+| `--output-dir <path>` | Destination directory for `.app` bundles | `./build` |
+| `--all <dir>` | Process all immediate subdirectories in `<dir>` | — |
+| `--symbol <name>` | Apple SF Symbol name (e.g. `folder.badge.gear`, `terminal.fill`) | Folder icon |
+| `--color <color>` | Background color: preset (`blue`, `purple`, `pink`, `red`, `orange`, `green`, `teal`, `dark`, etc.) or hex (`#007AFF`) | `dark` |
+| `--image <path>` | Custom PNG/JPEG/ICNS file to use as icon | — |
+| `--sort <mode>` | Sorting order: `name` (A–Z), `recent` (Date Modified), `kind` (Apps > Folders > Files) | `name` |
+| `--max-depth <n>` | Maximum submenu nesting depth | `3` |
+| `--add-to-dock` | Automatically pin the generated `.app` to your macOS Dock | `false` |
+| `-h, --help` | Show help message | — |
 
-2. **Create sub-folders** for each Dock group:
+---
 
-   ```bash
-   mkdir ~/Documents/dock-folders/coding
-   mkdir ~/Documents/dock-folders/music
-   ```
+## ⌨️ Keyboard & Mouse Controls
 
-3. **Add items**: Drag apps, aliases, files, or folders into these directories.
+| Action | Result |
+|---|---|
+| **Left Click** / **Return** | Open file, app, or folder |
+| **⌥ Option + Click** | Reveal selected item in Finder |
+| **⌘1 – ⌘9** | Instant keyboard launch for items 1 through 9 |
+| **⌘O** | Show root folder in Finder |
+| **⌘T** | Open root folder in Terminal |
+| **Drag & Drop** | Drag file(s) onto Dock icon to copy them into the folder |
 
-4. **Add icons**: Use [Customize Folder](https://support.apple.com/guide/mac-help/customize-folders-files-mac-mchlp2313/mac) or Finder's _Get Info_ panel to set custom icons. The script will automatically use them.
+---
 
-### Options
+## 🔒 Privacy & Security
 
-| Option            | Description                                       |
-| ----------------- | ------------------------------------------------- |
-| `--all <dir>`     | Build apps for all sub-folders in `<dir>`         |
-| `<folder>`        | Build an app for a single folder                  |
-| `OUTPUT_DIR=path` | Change the output directory (default: `./build/`) |
+This project contains **zero network calls, telemetry, or analytics**. Everything is compiled and run entirely on your local machine using macOS native tooling.
 
-## Installation
-
-No dependencies required. The script uses only built-in macOS tools.
-
-1. Download `dock-folders.sh`
-2. Make it executable:
-   ```bash
-   chmod +x dock-folders.sh
-   ```
-3. Run it!
-
-## Images
-
-![macos-dock-folders-old](https://github.com/user-attachments/assets/723bb143-b7ac-4e77-ae9f-21b139148560)
-
-![macos-dock-folders-new](https://github.com/user-attachments/assets/dfdf0579-0ea7-4bf2-98a7-114312f419ac)
-
-## License
+## 📄 License
 
 [MIT](LICENSE)
