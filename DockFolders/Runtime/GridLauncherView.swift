@@ -13,9 +13,7 @@ public struct GridLauncherView: View {
     public let onOpenTerminal: () -> Void
     public let onClose: () -> Void
 
-    @State private var searchText: String = ""
     @State private var selectedIndex: Int = 0
-    @FocusState private var isSearchFocused: Bool
 
     public init(
         title: String,
@@ -32,7 +30,7 @@ public struct GridLauncherView: View {
         self.title = title
         self.targetURL = targetURL
         self.items = items
-        self.columnsCount = max(3, min(columnsCount, 8))
+        self.columnsCount = max(2, min(columnsCount, 8))
         self.showLabels = showLabels
         self.onLaunch = onLaunch
         self.onReveal = onReveal
@@ -41,171 +39,93 @@ public struct GridLauncherView: View {
         self.onClose = onClose
     }
 
-    var filteredItems: [LauncherItem] {
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if q.isEmpty {
-            return items
-        }
-        return items.filter { $0.name.localizedCaseInsensitiveContains(q) }
+    var effectiveCols: Int {
+        let count = max(1, items.count)
+        return max(1, min(columnsCount, count))
     }
 
     var gridColumns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 14), count: columnsCount)
+        Array(repeating: GridItem(.fixed(72), spacing: 10), count: effectiveCols)
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            // Header Bar
-            HStack {
-                Text(title)
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                Spacer()
-                Text("\(filteredItems.count) item\(filteredItems.count == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
-            .padding(.bottom, 10)
-
-            // Search Filter
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                TextField("Search…", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .focused($isSearchFocused)
-                    .onChange(of: searchText) { _ in
-                        selectedIndex = 0
-                    }
-                    .onSubmit {
-                        launchCurrentSelection()
-                    }
-
-                if !searchText.isEmpty {
-                    Button(action: { searchText = ""; selectedIndex = 0 }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(8)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
-            .cornerRadius(8)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 12)
-
-            Divider()
-
-            // Main Grid Scroll Area
-            ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: true) {
-                    if filteredItems.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: "tray")
-                                .font(.system(size: 32))
-                                .foregroundColor(.secondary)
-                            Text(items.isEmpty ? "Folder is empty" : "No matching items")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 180)
-                    } else {
-                        LazyVGrid(columns: gridColumns, spacing: 16) {
-                            ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
-                                GridItemCell(
-                                    item: item,
-                                    showLabel: showLabels,
-                                    isSelected: index == selectedIndex,
-                                    onTap: {
-                                        selectedIndex = index
-                                        onLaunch(item)
-                                    },
-                                    onReveal: { onReveal(item) }
-                                )
-                                .id(index)
-                            }
-                        }
-                        .padding(16)
-                    }
-                }
-                .frame(maxHeight: 420)
-                .onChange(of: selectedIndex) { newIndex in
-                    withAnimation {
-                        proxy.scrollTo(newIndex, anchor: .center)
-                    }
-                }
-            }
-
-            Divider()
-
-            // Footer Bar
-            HStack(spacing: 12) {
-                Button(action: onOpenFolder) {
-                    Label("Show in Finder", systemImage: "folder")
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 12))
-
-                Button(action: onOpenTerminal) {
-                    Label("Terminal", systemImage: "terminal")
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 12))
-
-                Spacer()
-
-                Button("Done", action: onClose)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Color(NSColor.windowBackgroundColor).opacity(0.4))
-        }
-        .frame(width: CGFloat(columnsCount * 80 + 40))
-        .background(.ultraThinMaterial)
-        .onAppear {
-            isSearchFocused = true
-        }
-        .background(
-            KeyboardNavReceiver(
+        ZStack {
+            KeyHandlingView(
                 onLeft: { moveSelection(by: -1) },
                 onRight: { moveSelection(by: 1) },
-                onUp: { moveSelection(by: -columnsCount) },
-                onDown: { moveSelection(by: columnsCount) },
+                onUp: { moveSelection(by: -effectiveCols) },
+                onDown: { moveSelection(by: effectiveCols) },
                 onReturn: { launchCurrentSelection() },
-                onEscape: onClose
+                onEscape: { onClose() }
             )
+            .frame(width: 0, height: 0)
+
+            if items.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 28))
+                        .foregroundColor(.secondary)
+                    Text("Folder is empty")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(24)
+            } else {
+                LazyVGrid(columns: gridColumns, spacing: 10) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        GridItemCell(
+                            item: item,
+                            showLabel: showLabels,
+                            isSelected: index == selectedIndex,
+                            onTap: {
+                                selectedIndex = index
+                                onLaunch(item)
+                            },
+                            onReveal: { onReveal(item) }
+                        )
+                        .id(index)
+                    }
+                }
+                .padding(12)
+            }
+        }
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.2), lineWidth: 1)
         )
     }
 
     private func moveSelection(by delta: Int) {
-        var state = GridNavigationState(selectedIndex: selectedIndex, columnsCount: columnsCount, totalItems: filteredItems.count)
-        state.move(by: delta)
+        guard !items.isEmpty else { return }
+        var state = GridNavigationState(selectedIndex: selectedIndex, columnsCount: effectiveCols, totalItems: items.count)
+        if delta == 1 { state.moveRight() }
+        else if delta == -1 { state.moveLeft() }
+        else if delta > 1 { state.moveDown() }
+        else if delta < -1 { state.moveUp() }
         selectedIndex = state.selectedIndex
     }
 
     private func launchCurrentSelection() {
-        let state = GridNavigationState(selectedIndex: selectedIndex, columnsCount: columnsCount, totalItems: filteredItems.count)
-        guard state.totalItems > 0 else { return }
-        onLaunch(filteredItems[state.selectedIndex])
+        guard selectedIndex >= 0 && selectedIndex < items.count else { return }
+        onLaunch(items[selectedIndex])
     }
 }
 
-struct KeyboardNavReceiver: NSViewRepresentable {
-    let onLeft: () -> Void
-    let onRight: () -> Void
-    let onUp: () -> Void
-    let onDown: () -> Void
-    let onReturn: () -> Void
-    let onEscape: () -> Void
+// ─────────────────────────────────────────────────────────────────────────────
+// Keyboard Event Monitor Helper
+// ─────────────────────────────────────────────────────────────────────────────
+struct KeyHandlingView: NSViewRepresentable {
+    var onLeft: () -> Void
+    var onRight: () -> Void
+    var onUp: () -> Void
+    var onDown: () -> Void
+    var onReturn: () -> Void
+    var onEscape: () -> Void
 
-    func makeNSView(context: Context) -> NSView {
-        let view = KeyInterceptingView()
+    func makeNSView(context: Context) -> KeyView {
+        let view = KeyView()
         view.onLeft = onLeft
         view.onRight = onRight
         view.onUp = onUp
@@ -215,9 +135,16 @@ struct KeyboardNavReceiver: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: KeyView, context: Context) {
+        nsView.onLeft = onLeft
+        nsView.onRight = onRight
+        nsView.onUp = onUp
+        nsView.onDown = onDown
+        nsView.onReturn = onReturn
+        nsView.onEscape = onEscape
+    }
 
-    class KeyInterceptingView: NSView {
+    class KeyView: NSView {
         var onLeft: (() -> Void)?
         var onRight: (() -> Void)?
         var onUp: (() -> Void)?
@@ -259,6 +186,9 @@ struct KeyboardNavReceiver: NSViewRepresentable {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Grid Item Cell Component
+// ─────────────────────────────────────────────────────────────────────────────
 struct GridItemCell: View {
     let item: LauncherItem
     let showLabel: Bool
@@ -270,39 +200,40 @@ struct GridItemCell: View {
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 ZStack(alignment: .topTrailing) {
                     Image(nsImage: item.icon)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(width: 48, height: 48)
-                        .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+                        .frame(width: 46, height: 46)
+                        .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
 
                     if item.isBroken {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 14))
+                            .font(.system(size: 13))
                             .foregroundColor(.orange)
-                            .background(Circle().fill(Color.white).frame(width: 10, height: 10))
+                            .background(Circle().fill(Color.white).frame(width: 8, height: 8))
                     }
                 }
 
                 if showLabel {
                     Text(item.name)
-                        .font(.system(size: 11))
+                        .font(.system(size: 11, weight: .medium))
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
                         .foregroundColor(item.isBroken ? .secondary : .primary)
-                        .frame(maxWidth: 72)
+                        .frame(maxWidth: 68)
                 }
             }
-            .padding(6)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isHovered || isSelected ? Color.accentColor.opacity(0.25) : Color.clear)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isHovered || isSelected ? Color.white.opacity(0.2) : Color.clear)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
             )
         }
         .buttonStyle(.plain)

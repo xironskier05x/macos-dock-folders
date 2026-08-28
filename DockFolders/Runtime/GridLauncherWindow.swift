@@ -12,8 +12,21 @@ public class GridLauncherWindow: NSPanel, NSWindowDelegate {
         showLabels: Bool,
         anchorPoint: NSPoint
     ) {
+        // Calculate dynamic dimensions
+        let count = max(1, items.count)
+        let effectiveCols = max(1, min(columnsCount, count))
+        let rows = Int(ceil(Double(count) / Double(effectiveCols)))
+
+        let cellWidth: CGFloat = 72
+        let cellHeight: CGFloat = showLabels ? 76 : 54
+        let spacing: CGFloat = 10
+        let padding: CGFloat = 12
+
+        let calculatedWidth = CGFloat(effectiveCols) * cellWidth + CGFloat(max(0, effectiveCols - 1)) * spacing + (padding * 2)
+        let calculatedHeight = CGFloat(rows) * cellHeight + CGFloat(max(0, rows - 1)) * spacing + (padding * 2)
+
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: CGFloat(columnsCount * 80 + 40), height: 350),
+            contentRect: NSRect(x: 0, y: 0, width: calculatedWidth, height: calculatedHeight),
             styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -25,7 +38,7 @@ public class GridLauncherWindow: NSPanel, NSWindowDelegate {
         self.titleVisibility = .hidden
         self.titlebarAppearsTransparent = true
         self.isMovableByWindowBackground = true
-        self.level = .floating
+        self.level = .popUpMenu
         self.hasShadow = true
         self.delegate = self
 
@@ -90,6 +103,10 @@ public class GridLauncherWindow: NSPanel, NSWindowDelegate {
         )
 
         let hostingView = NSHostingView(rootView: rootView)
+        let fitting = hostingView.fittingSize
+        let finalWidth = max(calculatedWidth, fitting.width > 0 ? fitting.width : calculatedWidth)
+        let finalHeight = max(calculatedHeight, fitting.height > 0 ? fitting.height : calculatedHeight)
+        self.setContentSize(NSSize(width: finalWidth, height: finalHeight))
         self.contentView = hostingView
 
         positionNearAnchor(anchorPoint)
@@ -103,22 +120,23 @@ public class GridLauncherWindow: NSPanel, NSWindowDelegate {
         let visibleFrame = s.visibleFrame
         let winSize = self.frame.size
 
-        var posX = max(visibleFrame.minX + 10, min(anchor.x - winSize.width / 2, visibleFrame.maxX - winSize.width - 10))
-        var posY = max(visibleFrame.minY + 10, min(anchor.y + 10, visibleFrame.maxY - winSize.height - 10))
+        var posX = max(visibleFrame.minX + 12, min(anchor.x - winSize.width / 2, visibleFrame.maxX - winSize.width - 12))
+        var posY = visibleFrame.minY + 12
 
         let dockOrientation = (UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom").lowercased()
         switch dockOrientation {
         case "left":
-            posX = visibleFrame.minX + 10
-            posY = max(visibleFrame.minY + 10, min(anchor.y - winSize.height / 2, visibleFrame.maxY - winSize.height - 10))
+            posX = visibleFrame.minX + 12
+            posY = max(visibleFrame.minY + 12, min(anchor.y - winSize.height / 2, visibleFrame.maxY - winSize.height - 12))
         case "right":
-            posX = visibleFrame.maxX - winSize.width - 10
-            posY = max(visibleFrame.minY + 10, min(anchor.y - winSize.height / 2, visibleFrame.maxY - winSize.height - 10))
+            posX = visibleFrame.maxX - winSize.width - 12
+            posY = max(visibleFrame.minY + 12, min(anchor.y - winSize.height / 2, visibleFrame.maxY - winSize.height - 12))
         default:
-            posY = visibleFrame.minY + 10
+            // Dock at bottom: strictly place above Dock's top boundary
+            posY = visibleFrame.minY + 12
         }
 
-        self.setFrameOrigin(NSPoint(x: posX, y: posY))
+        self.setFrame(NSRect(x: posX, y: posY, width: winSize.width, height: winSize.height), display: true)
     }
 
     public override var canBecomeKey: Bool { true }
