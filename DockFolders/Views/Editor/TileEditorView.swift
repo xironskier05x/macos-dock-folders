@@ -19,10 +19,27 @@ public struct TileEditorView: View {
     @State private var items: [LauncherItem] = []
     @State private var customOrder: [String]? = nil
     @State private var addToDock: Bool = true
-    @State private var draftTileID: String = UUID().uuidString
+    @State private var draftCollectionID: String = UUID().uuidString
+    @State private var isDraftCreated: Bool = false
+
+    @State private var errorMessage: String? = nil
+    @State private var isShowingError: Bool = false
 
     public init(existingTile: DockTile? = nil) {
         self.existingTile = existingTile
+    }
+
+    var isFormValid: Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.contains("/") || trimmed.contains(":") {
+            return false
+        }
+        if tileMode == .folder {
+            if targetPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !FileManager.default.fileExists(atPath: targetPath) {
+                return false
+            }
+        }
+        return true
     }
 
     public var body: some View {
@@ -32,14 +49,17 @@ public struct TileEditorView: View {
                 Text(existingTile == nil ? "Create Dock Folder" : "Edit Dock Folder")
                     .font(.headline)
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
+                Button("Cancel") {
+                    cancelAndCleanup()
+                }
+                .keyboardShortcut(.cancelAction)
+
                 Button(existingTile == nil ? "Create" : "Save") {
                     saveTile()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!isFormValid)
             }
             .padding()
             .background(Color(NSColor.windowBackgroundColor))
@@ -48,7 +68,7 @@ public struct TileEditorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Tile Mode Selector
+                    // Mode Selector (Disabled if editing existing tile to avoid accidental destructive mode switch)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Tile Mode")
                             .font(.subheadline)
@@ -60,6 +80,7 @@ public struct TileEditorView: View {
                             }
                         }
                         .pickerStyle(.segmented)
+                        .disabled(existingTile != nil)
 
                         Text(tileMode.description)
                             .font(.caption)
@@ -73,13 +94,23 @@ public struct TileEditorView: View {
                             .fontWeight(.medium)
                         TextField("e.g. AI Apps, Coding Projects, Utilities", text: $name)
                             .textFieldStyle(.roundedBorder)
+
+                        if name.contains("/") || name.contains(":") {
+                            Text("Name cannot contain / or : characters")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
                     }
 
                     // Mode Specific Configuration
                     if tileMode == .folder {
                         FolderSettingsEditor(targetPath: $targetPath, maxDepth: $maxDepth)
                     } else {
-                        LauncherItemsEditor(tileID: draftTileID, items: $items, customOrder: $customOrder)
+                        LauncherItemsEditor(
+                            tileID: draftCollectionID,
+                            items: $items,
+                            customOrder: $customOrder
+                        )
                     }
 
                     // Presentation & Layout
@@ -123,14 +154,23 @@ public struct TileEditorView: View {
                         IconPickerView(iconConfig: $iconConfig, fallbackFolder: tileMode == .folder ? targetPath : nil)
                     }
 
-                    // Dock Pinning
-                    Toggle("Add to macOS Dock automatically", isOn: $addToDock)
-                        .padding(.top, 4)
+                    // Dock Pinning (Only for new tiles)
+                    if existingTile == nil {
+                        Toggle("Add to macOS Dock automatically", isOn: $addToDock)
+                            .padding(.top, 4)
+                    }
                 }
                 .padding(20)
             }
         }
         .frame(width: 580, height: 640)
+        .alert(isPresented: $isShowingError) {
+            Alert(
+                title: Text("Could Not Save Tile"),
+                message: Text(errorMessage ?? "An unknown error occurred."),
+                dismissButton: .default(Text("OK"))
+            )
+        }
         .onAppear {
             if let tile = existingTile {
                 name = tile.name
@@ -143,42 +183,85 @@ public struct TileEditorView: View {
                 showLabels = tile.config.resolvedShowLabels
                 iconConfig = tile.config.iconConfig ?? IconConfiguration()
                 customOrder = tile.config.customOrder
-                draftTileID = FileHelpers.deterministicHash(for: tile.config.targetPath)
+                draftCollectionID = tile.config.collectionID ?? UUID().uuidString
                 items = tile.items
                 addToDock = tile.isDockPinned
+                isDraftCreated = false
             } else {
-                draftTileID = UUID().uuidString
+                draftCollectionID = UUID().uuidString
+                isDraftCreated = true
             }
         }
     }
 
-    private func saveTile() {
-        guard let runtimeURL = RuntimeInstallerService.getOrCreateRuntime() else { return }
-
-        var resolvedTarget = targetPath
-        if tileMode == .launcher {
-            let collectionDir = LauncherCollectionService.collectionDirectory(for: draftTileID)
-            resolvedTarget = collectionDir.path
-        }
-
-        let res = tileStore.createTile(
-            name: name,
-            targetPath: resolvedTarget,
-            mode: tileMode,
-            presentation: presentationMode,
-            sort: sortMode,
-            maxDepth: maxDepth,
-            gridColumns: gridColumns,
-            showLabels: showLabels,
-            iconConfig: iconConfig,
-            customOrder: customOrder,
-            addToDock: addToDock,
-            runtimeURL: runtimeURL
-        )
-
-        if let tile = res.tile {
-            selectionStore.selectedTileId = tile.id
+    private func cancelAndCleanup() {
+        if existingTile == nil && isDraftCreated {
+            // Clean up aborted draft collection
+            try? LauncherCollectionService.deleteManagedCollection(collectionID: draftCollectionID)
         }
         dismiss()
+    }
+
+    private func saveTile() {
+        guard let runtimeURL = RuntimeInstallerService.getOrCreateRuntime() else {
+            errorMessage = "Could not locate precompiled DockFolderRuntime binary."
+            isShowingError = true
+            return
+        }
+
+        do {
+            if let existing = existingTile {
+                var resolvedTarget = targetPath
+                if existing.config.resolvedTileMode == .launcher {
+                    if let cid = existing.config.collectionID, let colURL = LauncherCollectionService.collectionURL(for: cid, createIfMissing: true) {
+                        resolvedTarget = colURL.path
+                    }
+                }
+
+                _ = try tileStore.updateTile(
+                    existingTile: existing,
+                    newName: name,
+                    targetPath: resolvedTarget,
+                    mode: tileMode,
+                    presentation: presentationMode,
+                    sort: sortMode,
+                    maxDepth: maxDepth,
+                    gridColumns: gridColumns,
+                    showLabels: showLabels,
+                    iconConfig: iconConfig,
+                    customOrder: customOrder,
+                    runtimeURL: runtimeURL
+                )
+            } else {
+                var resolvedTarget = targetPath
+                var cid: String? = nil
+                if tileMode == .launcher {
+                    let (_, colURL) = try LauncherCollectionService.createManagedCollection(collectionID: draftCollectionID)
+                    resolvedTarget = colURL.path
+                    cid = draftCollectionID
+                }
+
+                let newTile = try tileStore.createTile(
+                    name: name,
+                    targetPath: resolvedTarget,
+                    mode: tileMode,
+                    presentation: presentationMode,
+                    sort: sortMode,
+                    maxDepth: maxDepth,
+                    gridColumns: gridColumns,
+                    showLabels: showLabels,
+                    iconConfig: iconConfig,
+                    customOrder: customOrder,
+                    collectionID: cid,
+                    addToDock: addToDock,
+                    runtimeURL: runtimeURL
+                )
+                selectionStore.selectedTileId = newTile.id
+            }
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+            isShowingError = true
+        }
     }
 }

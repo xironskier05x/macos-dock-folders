@@ -11,6 +11,7 @@ public struct DockTileConfig: Codable, Equatable {
     public var gridColumns: Int?
     public var showLabels: Bool?
     public var customOrder: [String]?
+    public var collectionID: String?
     public var iconConfig: IconConfiguration?
 
     public init(
@@ -24,6 +25,7 @@ public struct DockTileConfig: Codable, Equatable {
         gridColumns: Int? = 5,
         showLabels: Bool? = true,
         customOrder: [String]? = nil,
+        collectionID: String? = nil,
         iconConfig: IconConfiguration? = nil
     ) {
         self.targetPath = targetPath
@@ -36,7 +38,16 @@ public struct DockTileConfig: Codable, Equatable {
         self.gridColumns = gridColumns
         self.showLabels = showLabels
         self.customOrder = customOrder
+        self.collectionID = collectionID
         self.iconConfig = iconConfig
+    }
+
+    public var isManagedLauncher: Bool {
+        resolvedTileMode == .launcher && collectionID != nil
+    }
+
+    public var isLegacyLauncher: Bool {
+        resolvedTileMode == .launcher && collectionID == nil
     }
 
     // Safe getters with backwards-compatible defaults

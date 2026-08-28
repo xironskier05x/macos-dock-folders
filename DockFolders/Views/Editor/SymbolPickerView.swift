@@ -19,6 +19,10 @@ public struct SymbolPickerView: View {
         return popularSymbols.filter { $0.contains(q) }
     }
 
+    var isValidCustomSymbol: Bool {
+        NSImage(systemSymbolName: selectedSymbol, accessibilityDescription: nil) != nil
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -26,10 +30,27 @@ public struct SymbolPickerView: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                 Spacer()
-                TextField("Custom Symbol Name…", text: $selectedSymbol)
+                TextField("Search or Enter Symbol…", text: $selectedSymbol)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 180)
+                    .frame(width: 220)
             }
+
+            if !selectedSymbol.isEmpty && !isValidCustomSymbol {
+                Text("⚠️ '\(selectedSymbol)' is not recognized as a valid SF Symbol.")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                TextField("Filter popular symbols…", text: $searchSymbol)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+            }
+            .padding(6)
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
+            .cornerRadius(6)
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 8) {
                 ForEach(filteredSymbols, id: \.self) { symbol in

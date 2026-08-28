@@ -5,12 +5,13 @@ public struct TileDiscoveryService {
     public static var defaultOutputDirectory: URL {
         let appDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Dock Folders")
         try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-        return appDir
+        return appDir.standardizedFileURL
     }
 
     public static func discoverTiles(in searchDirectory: URL = defaultOutputDirectory) -> [DockTile] {
         let fm = FileManager.default
-        guard let contents = try? fm.contentsOfDirectory(at: searchDirectory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
+        let canonicalSearch = searchDirectory.standardizedFileURL
+        guard let contents = try? fm.contentsOfDirectory(at: canonicalSearch, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
             return []
         }
 
@@ -33,7 +34,7 @@ public struct TileDiscoveryService {
                let decoded = try? JSONDecoder().decode(DockTileConfig.self, from: configData) {
                 config = decoded
             } else {
-                // Backward-compatible fallback
+                // Safe 2.x fallback
                 let targetPath = (plist["CFBundleName"] as? String) ?? url.deletingPathExtension().lastPathComponent
                 config = DockTileConfig(targetPath: targetPath, displayName: url.deletingPathExtension().lastPathComponent)
             }
@@ -45,8 +46,16 @@ public struct TileDiscoveryService {
 
             var items: [LauncherItem] = []
             if config.resolvedTileMode == .launcher {
-                let tileID = FileHelpers.deterministicHash(for: config.targetPath)
-                items = LauncherCollectionService.fetchItems(for: tileID, customOrder: config.customOrder)
+                if let cid = config.collectionID {
+                    // Managed 3.x collection
+                    if let collectionURL = LauncherCollectionService.collectionURL(for: cid, createIfMissing: false) {
+                        items = LauncherCollectionService.fetchItems(for: collectionURL, customOrder: config.customOrder)
+                    }
+                } else {
+                    // Legacy 2.x unmanaged launcher
+                    let legacyURL = URL(fileURLWithPath: config.targetPath)
+                    items = LauncherCollectionService.fetchItems(for: legacyURL, customOrder: config.customOrder)
+                }
             }
 
             let tile = DockTile(

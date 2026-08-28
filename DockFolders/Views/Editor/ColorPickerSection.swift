@@ -5,9 +5,16 @@ public struct ColorPickerSection: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Tile Color")
-                .font(.subheadline)
-                .fontWeight(.medium)
+            HStack {
+                Text("Tile Color")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                TextField("Hex (#007AFF)", text: $selectedHex)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(width: 120)
+            }
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 8) {
                 ForEach(IconConfiguration.presetColors, id: \.hex) { preset in

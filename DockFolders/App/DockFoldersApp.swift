@@ -28,7 +28,7 @@ struct DockFoldersApp: App {
                     if let selectedId = selectionStore.selectedTileId,
                        let tile = tileStore.tile(for: selectedId),
                        let runtimeURL = RuntimeInstallerService.getOrCreateRuntime() {
-                        _ = tileStore.rebuildTile(tile, runtimeURL: runtimeURL)
+                        _ = try? tileStore.rebuildTile(tile, runtimeURL: runtimeURL)
                     }
                 }
                 .keyboardShortcut("r", modifiers: .command)

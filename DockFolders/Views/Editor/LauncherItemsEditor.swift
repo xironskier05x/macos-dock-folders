@@ -5,6 +5,7 @@ public struct LauncherItemsEditor: View {
     let tileID: String
     @Binding var items: [LauncherItem]
     @Binding var customOrder: [String]?
+    @State private var selectedItemIds = Set<String>()
     @State private var isDropTargeted: Bool = false
 
     public var body: some View {
@@ -38,7 +39,7 @@ public struct LauncherItemsEditor: View {
                         .strokeBorder(isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.3), style: StrokeStyle(lineWidth: 2, dash: [6]))
                 )
             } else {
-                List {
+                List(selection: $selectedItemIds) {
                     ForEach(items) { item in
                         HStack(spacing: 10) {
                             Image(nsImage: item.icon)
@@ -64,12 +65,27 @@ public struct LauncherItemsEditor: View {
                             .buttonStyle(.borderless)
                         }
                         .padding(.vertical, 2)
+                        .contextMenu {
+                            Button("Open Original") {
+                                NSWorkspace.shared.open(URL(fileURLWithPath: item.resolvedPath))
+                            }
+                            Button("Reveal Original in Finder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.resolvedPath)])
+                            }
+                            Divider()
+                            Button("Remove from Launcher", role: .destructive) {
+                                removeItem(item)
+                            }
+                        }
                     }
                     .onMove(perform: moveItems)
                 }
                 .frame(minHeight: 160, maxHeight: 220)
                 .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
                 .cornerRadius(8)
+                .onDeleteCommand {
+                    deleteSelected()
+                }
             }
         }
         .padding()
@@ -115,13 +131,25 @@ public struct LauncherItemsEditor: View {
         refreshItems()
     }
 
+    private func deleteSelected() {
+        for id in selectedItemIds {
+            if let item = items.first(where: { $0.id == id }) {
+                _ = LauncherCollectionService.removeItem(at: URL(fileURLWithPath: item.path))
+            }
+        }
+        selectedItemIds.removeAll()
+        refreshItems()
+    }
+
     private func moveItems(from source: IndexSet, to destination: Int) {
         items.move(fromOffsets: source, toOffset: destination)
-        customOrder = items.map { $0.name }
+        customOrder = items.map { $0.id }
     }
 
     private func refreshItems() {
-        items = LauncherCollectionService.fetchItems(for: tileID, customOrder: customOrder)
-        customOrder = items.map { $0.name }
+        if let colURL = LauncherCollectionService.collectionURL(for: tileID, createIfMissing: false) {
+            items = LauncherCollectionService.fetchItems(for: colURL, customOrder: customOrder)
+            customOrder = items.map { $0.id }
+        }
     }
 }

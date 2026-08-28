@@ -4,10 +4,42 @@ public struct TileDetailView: View {
     @ObservedObject var tile: DockTile
     @EnvironmentObject var tileStore: TileStore
     @EnvironmentObject var selectionStore: SelectionStore
+    @ObservedObject var prefs = PreferencesStore.shared
+
+    @State private var isShowingDeleteConfirm: Bool = false
+    @State private var isShowingMigrationConfirm: Bool = false
 
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                // Legacy Migration Banner if applicable
+                if tile.config.isLegacyLauncher {
+                    HStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.orange)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Legacy 2.x Unmanaged Launcher")
+                                .font(.headline)
+                            Text("This launcher points to an external directory. Convert to a 3.0 Managed Collection to enable visual drag-and-drop item management.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button("Convert to Managed Collection…") {
+                            isShowingMigrationConfirm = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                    .padding()
+                    .background(Color.orange.opacity(0.12))
+                    .cornerRadius(10)
+                }
+
                 // Header Area
                 HStack(spacing: 18) {
                     if let img = tile.iconImage {
@@ -134,7 +166,7 @@ public struct TileDetailView: View {
                         HStack(spacing: 12) {
                             Button(action: {
                                 if let runtimeURL = RuntimeInstallerService.getOrCreateRuntime() {
-                                    _ = tileStore.rebuildTile(tile, runtimeURL: runtimeURL)
+                                    _ = try? tileStore.rebuildTile(tile, runtimeURL: runtimeURL)
                                 }
                             }) {
                                 Label("Rebuild Launcher", systemImage: "arrow.clockwise")
@@ -149,8 +181,11 @@ public struct TileDetailView: View {
                             Spacer()
 
                             Button(role: .destructive, action: {
-                                tileStore.deleteTile(tile, deleteCollection: true)
-                                selectionStore.selectedTileId = nil
+                                if prefs.confirmDeletion {
+                                    isShowingDeleteConfirm = true
+                                } else {
+                                    performDelete()
+                                }
                             }) {
                                 Label("Delete", systemImage: "trash")
                             }
@@ -170,5 +205,36 @@ public struct TileDetailView: View {
             .padding(20)
         }
         .navigationTitle(tile.name)
+        .confirmationDialog(
+            "Delete '\(tile.name)'?",
+            isPresented: $isShowingDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Launcher (.app and collection)", role: .destructive) {
+                performDelete()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove the generated .app from your Mac and Dock. Original applications and files will NOT be deleted.")
+        }
+        .confirmationDialog(
+            "Convert to Managed Collection?",
+            isPresented: $isShowingMigrationConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Convert", role: .none) {
+                if let runtimeURL = RuntimeInstallerService.getOrCreateRuntime() {
+                    _ = try? tileStore.migrateLegacyTile(tile, runtimeURL: runtimeURL)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This creates a managed collection in Application Support and copies references from the legacy directory. Your original folder and files remain untouched.")
+        }
+    }
+
+    private func performDelete() {
+        tileStore.deleteTile(tile, deleteCollection: true)
+        selectionStore.selectedTileId = nil
     }
 }

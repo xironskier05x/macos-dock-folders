@@ -3,6 +3,7 @@
 [![CI Tests](https://github.com/xironskier05x/macos-dock-folders/actions/workflows/test.yml/badge.svg)](https://github.com/xironskier05x/macos-dock-folders/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/badge/Release-v3.0.0-green.svg)](https://github.com/xironskier05x/macos-dock-folders/releases)
+[![Platform](https://img.shields.io/badge/macOS-13.0%2B%20%28Universal%20arm64%20%2B%20x86__64%29-brightgreen.svg)]()
 
 Transform any folder or collection into a **high-performance, clickable macOS Dock launcher** with native List Menus, visual App Grids, drag-and-drop management, persistent URL bookmark self-healing, SF Symbols styling, and an intuitive native desktop GUI.
 
@@ -10,12 +11,13 @@ Transform any folder or collection into a **high-performance, clickable macOS Do
 
 ## 🌟 What's New in 3.0
 
-- 🖥️ **Dock Folders Manager.app**: Full native SwiftUI desktop application for creating, managing, editing, reordering, and pinning Dock Folders visually.
-- 📱 **Visual Grid Presentation Mode**: Launchers can now open as a sleek floating app-grid beside your Dock with real app icons, type-to-filter search, and arrow key navigation.
-- 📂 **Managed Launcher Collections**: Drag applications, documents, folders, or scripts directly into launcher collections in Manager. Originals remain safe and untouched in their original locations.
-- 🎨 **Visual Icon & SF Symbol Editor**: Live preview thumbnail, SF Symbol search picker, Apple color palette, custom image support, and emoji integration.
-- 🧭 **Zero-Terminal End-User Workflow**: Manager embeds a precompiled universal `DockFolderRuntime`, allowing users to create tiles without installing developer tools.
-- 🔄 **2.x Backwards Compatibility**: Automatically discovers existing 2.x tiles in `~/Applications/Dock Folders/` and applies safe in-memory defaults.
+- 🖥️ **Dock Folders Manager.app**: Full native SwiftUI desktop application for creating, managing, editing, reordering, and pinning Dock Folders visually without Terminal.
+- 📱 **Visual Grid Presentation Mode**: Launchers can open as a floating app-grid beside your Dock with real app icons, type-to-filter search, full arrow key navigation, and automatic dismissal on click-outside.
+- 📂 **True Managed Launcher Collections**: Stable `collectionID` architecture storing virtual references under `~/Library/Application Support/macOS Dock Folders/Collections/<collectionID>/`. Original source files and applications are never moved, modified, or deleted.
+- 🎨 **Visual Icon & SF Symbol Editor**: Live preview thumbnail, SF Symbol search filter and validation, Apple preset/hex color palettes, custom image support, and emoji integration.
+- 🔄 **Safe 2.x Legacy Discovery & Explicit Conversion**: Discovers existing 2.x tiles without creating extraneous collections, providing an explicit non-destructive "Convert to Managed Collection…" migration action.
+- ⚡ **Universal Binary Architecture**: Both `Dock Folders Manager.app` and `DockFolderRuntime` are compiled as fat universal binaries supporting Apple Silicon (`arm64`) and Intel (`x86_64`) on macOS 13.0+.
+- 🛡️ **Hardened Safety & Strict Code Signing**: Full overwrite verification (`DockFoldersGenerated` checking), 3-level deterministic collision disambiguation, path containment checking, and transactional staging/backup/rollback.
 
 ---
 
@@ -24,65 +26,54 @@ Transform any folder or collection into a **high-performance, clickable macOS Do
 ```text
 DockFolders/
 ├── App/
-│   ├── DockFoldersApp.swift       # SwiftUI App entry point
-│   └── AppDelegate.swift          # AppKit regular activation policy
+│   ├── DockFoldersApp.swift            # SwiftUI @main App scene with Menu commands & shortcuts
+│   └── AppDelegate.swift               # AppKit NSApplicationDelegate regular activation policy
 ├── Models/
-│   ├── DockTile.swift             # Main Tile model & state
-│   ├── DockTileConfig.swift       # Backwards-compatible JSON config
-│   ├── LauncherItem.swift         # Individual launcher item metadata
-│   ├── TileMode.swift             # Folder vs Launcher mode
-│   ├── PresentationMode.swift     # Menu vs Grid presentation
-│   ├── SortMode.swift             # Name, Recent, Kind, Custom
-│   └── IconConfiguration.swift    # Symbol, Color, Emoji, Image
+│   ├── DockTile.swift                  # Observable Tile model, memory state & publication
+│   ├── DockTileConfig.swift            # Backwards-compatible JSON config with collectionID
+│   ├── LauncherItem.swift              # Lightweight individual item metadata & icons
+│   ├── TileMode.swift                  # TileMode enum (.folder, .launcher)
+│   ├── PresentationMode.swift          # PresentationMode enum (.menu, .grid)
+│   ├── SortMode.swift                  # SortMode enum (.name, .recent, .kind, .custom)
+│   └── IconConfiguration.swift         # Icon styling (Symbol, Color, Emoji, Image, Folder)
 ├── Stores/
-│   ├── TileStore.swift            # Observable tile collection & disk sync
-│   ├── SelectionStore.swift       # Active selection and UI sheets
-│   └── PreferencesStore.swift     # User defaults & directory paths
+│   ├── TileStore.swift                 # Reactive collection store managing CRUD & update transactions
+│   ├── SelectionStore.swift            # Active sidebar selection and sheet state
+│   └── PreferencesStore.swift          # AppStorage persistent user defaults & directory paths
 ├── Services/
-│   ├── TileDiscoveryService.swift # Scans & loads 2.x and 3.0 launchers
-│   ├── TileGeneratorService.swift # Generates .app, Info.plist, codesigns
-│   ├── DockService.swift          # Idempotent Dock pinning & status
-│   ├── LauncherCollectionService.swift # Virtual collection management
-│   ├── BookmarkService.swift      # URL bookmark generation/resolution
-│   ├── IconRendererService.swift  # 1024x1024 .icns & preview rendering
-│   └── RuntimeInstallerService.swift # Embedded universal runtime loader
+│   ├── TileDiscoveryService.swift      # Scans ~/Applications/Dock Folders/ for 2.x & 3.0 tiles
+│   ├── TileGeneratorService.swift      # Generates, signs, and replaces .app bundles safely
+│   ├── DockService.swift               # Exact canonical Dock pinning, removal, and live status
+│   ├── LauncherCollectionService.swift # Manages virtual collections & symbolic references
+│   ├── BookmarkService.swift           # Base64 URL security-scoped / minimal bookmarks
+│   ├── IconRendererService.swift       # 1024x1024 .icns iconset generator & live renderer
+│   └── RuntimeInstallerService.swift   # Embedded universal runtime binary resolver
 ├── Views/
-│   ├── Sidebar/                   # Tile list & filter search
-│   ├── Detail/                    # Large icon preview, metadata & actions
-│   ├── Editor/                    # Creation sheet, items editor, icon picker
-│   ├── Preview/                   # Live Menu & Grid presentation preview
-│   └── Settings/                  # Preferences & defaults
+│   ├── Sidebar/                        # Tile list & filter search
+│   ├── Detail/                         # Large icon preview, metadata, actions, items list
+│   ├── Editor/                         # Visual Creation & Edit sheet with mode switchers
+│   ├── Preview/                        # Live Menu & Grid presentation preview
+│   └── Settings/                       # Preferences & defaults
 └── Runtime/
-    ├── DockFolderRuntime.swift    # Standalone lightweight tile engine
-    ├── GridLauncherView.swift     # SwiftUI Grid launcher popup view
-    └── GridLauncherWindow.swift   # Floating NSPanel positioned near Dock
+    ├── DockFolderRuntime.swift         # Universal one-shot runtime supporting Menu & Grid
+    ├── GridLauncherView.swift          # Native SwiftUI Grid popup view with keyboard navigation
+    └── GridLauncherWindow.swift        # Floating NSPanel positioned near Dock with dismissal lifecycle
 ```
-
----
-
-## 📥 Tile & Presentation Modes
-
-### 1. Tile Modes
-- **Launcher Mode (`--mode launcher`)**: A virtual shortcut collection for apps, documents, scripts, and directories. Dropping items creates lightweight references without duplicating files.
-- **Folder Mode (`--mode folder`)**: A directory browser. Dropping items copies them physically into the destination folder.
-
-### 2. Presentation Modes
-- **List Menu (`--presentation menu`)**: Native macOS hierarchical popup menu with instant subfolder navigation and two-phase icon loading.
-- **Icon Grid (`--presentation grid`)**: Modern floating panel with search filter, keyboard navigation, configurable columns (4–7), and instant dismissal.
 
 ---
 
 ## ⌨️ Shortcuts & Keyboard Controls
 
 ### In Grid Presentation:
-- **Arrow Keys**: Navigate items
+- **Arrow Keys (Left/Right/Up/Down)**: Navigate items across grid columns
 - **Enter / Return**: Launch selected item
-- **Escape**: Close panel
-- **Type text**: Filter items instantly
+- **Escape / Click Outside**: Close panel and terminate runtime
+- **Type text**: Instant type-to-filter search (search field focused automatically)
+- **Right-Click / Context Menu**: Open or Reveal original item in Finder
 
 ### In Menu Presentation:
 - **Click / Enter**: Open selected item
-- **⌥ Option + Click**: Reveal in Finder
+- **⌥ Option + Click**: Reveal selected item in Finder
 - **⌘1 – ⌘9**: Quick-launch top 9 items
 - **⌘O**: Show root folder in Finder
 - **⌘T**: Open root folder in Terminal
@@ -92,7 +83,7 @@ DockFolders/
 ## 📦 Building & Running
 
 ### Using the Manager App:
-Build, package, and launch `Dock Folders Manager.app`:
+Build, package, and launch `Dock Folders Manager.app` as a universal binary:
 ```bash
 ./script/build_and_run.sh
 ```
@@ -111,7 +102,7 @@ The command line tool remains fully supported:
 
 ## 🧪 Testing & Validation
 
-Run the 17-suite / 20-assertion test suite:
+Run the 20-suite comprehensive verification test suite:
 ```bash
 ./tests/run_tests.sh
 ```

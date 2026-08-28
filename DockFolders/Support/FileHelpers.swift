@@ -2,7 +2,49 @@ import Foundation
 import AppKit
 import CryptoKit
 
+public enum FileValidationError: LocalizedError {
+    case emptyName
+    case invalidCharacters(String)
+    case pathEscapesOutputDirectory
+    case fileDoesNotExist(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyName:
+            return "Tile name cannot be empty."
+        case .invalidCharacters(let chars):
+            return "Tile name contains invalid characters: \(chars)"
+        case .pathEscapesOutputDirectory:
+            return "Tile path escapes the designated output directory."
+        case .fileDoesNotExist(let path):
+            return "The specified path does not exist: \(path)"
+        }
+    }
+}
+
 public struct FileHelpers {
+    public static func validateTileName(_ name: String) throws -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            throw FileValidationError.emptyName
+        }
+        if trimmed == "." || trimmed == ".." {
+            throw FileValidationError.invalidCharacters(trimmed)
+        }
+        let invalidChars = CharacterSet(charactersIn: "/:\0")
+        if trimmed.rangeOfCharacter(from: invalidChars) != nil {
+            throw FileValidationError.invalidCharacters("/ or :")
+        }
+        return trimmed
+    }
+
+    public static func isChild(childURL: URL, of parentURL: URL) -> Bool {
+        let canonicalChild = childURL.standardizedFileURL.path
+        let canonicalParent = parentURL.standardizedFileURL.path
+        if canonicalChild == canonicalParent { return false }
+        return canonicalChild.hasPrefix(canonicalParent.hasSuffix("/") ? canonicalParent : canonicalParent + "/")
+    }
+
     public static func escapeXML(_ str: String) -> String {
         var res = str
         res = res.replacingOccurrences(of: "&", with: "&amp;")
@@ -14,7 +56,8 @@ public struct FileHelpers {
     }
 
     public static func deterministicHash(for path: String, length: Int = 12) -> String {
-        let data = Data(path.utf8)
+        let canonical = URL(fileURLWithPath: path).standardizedFileURL.path
+        let data = Data(canonical.utf8)
         let digest = SHA256.hash(data: data)
         let hashString = digest.map { String(format: "%02x", $0) }.joined()
         return String(hashString.prefix(length))

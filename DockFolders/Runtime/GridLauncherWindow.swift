@@ -1,7 +1,7 @@
 import Cocoa
 import SwiftUI
 
-public class GridLauncherWindow: NSPanel {
+public class GridLauncherWindow: NSPanel, NSWindowDelegate {
     public init(
         title: String,
         targetURL: URL,
@@ -24,8 +24,8 @@ public class GridLauncherWindow: NSPanel {
         self.titlebarAppearsTransparent = true
         self.isMovableByWindowBackground = true
         self.level = .floating
-        self.hidesOnDeactivate = true
         self.hasShadow = true
+        self.delegate = self
 
         let rootView = GridLauncherView(
             title: title,
@@ -34,7 +34,11 @@ public class GridLauncherWindow: NSPanel {
             columnsCount: columnsCount,
             showLabels: showLabels,
             onLaunch: { item in
-                NSWorkspace.shared.open(URL(fileURLWithPath: item.resolvedPath))
+                if !item.isBroken {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: item.resolvedPath))
+                } else {
+                    NSSound.beep()
+                }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     NSApp.terminate(nil)
                 }
@@ -100,5 +104,14 @@ public class GridLauncherWindow: NSPanel {
 
     public override func cancelOperation(_ sender: Any?) {
         NSApp.terminate(nil)
+    }
+
+    // Dismissal / Click-Outside lifecycle
+    public func windowDidResignKey(_ notification: Notification) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            if !self.isKeyWindow {
+                NSApp.terminate(nil)
+            }
+        }
     }
 }

@@ -1,14 +1,28 @@
 import Foundation
 
 public struct DockService {
+    private static func canonicalAppPath(_ path: String) -> String {
+        return URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private static func extractCanonicalPath(from tileData: [String: Any]) -> String? {
+        guard let fileData = tileData["file-data"] as? [String: Any],
+              let urlStr = fileData["_CFURLString"] as? String else {
+            return nil
+        }
+        if let url = URL(string: urlStr) {
+            return url.standardizedFileURL.path
+        }
+        return URL(fileURLWithPath: urlStr).standardizedFileURL.path
+    }
+
     public static func isTileInDock(appPath: String) -> Bool {
-        let appBundleName = (appPath as NSString).lastPathComponent
+        let canonical = canonicalAppPath(appPath)
         if let dockApps = UserDefaults(suiteName: "com.apple.dock")?.array(forKey: "persistent-apps") as? [[String: Any]] {
             for item in dockApps {
                 if let tileData = item["tile-data"] as? [String: Any],
-                   let fileData = tileData["file-data"] as? [String: Any],
-                   let urlStr = fileData["_CFURLString"] as? String {
-                    if urlStr.contains(appBundleName) || urlStr.contains(appPath) {
+                   let path = extractCanonicalPath(from: tileData) {
+                    if path == canonical {
                         return true
                     }
                 }
@@ -18,11 +32,12 @@ public struct DockService {
     }
 
     public static func addToDock(appPath: String) -> Bool {
-        if isTileInDock(appPath: appPath) {
+        let canonical = canonicalAppPath(appPath)
+        if isTileInDock(appPath: canonical) {
             return true
         }
 
-        let escaped = FileHelpers.escapeXML(appPath)
+        let escaped = FileHelpers.escapeXML(canonical)
         let tileData = "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>\(escaped)</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
         
         let p = Process()
@@ -32,11 +47,11 @@ public struct DockService {
         p.waitUntilExit()
 
         restartDock()
-        return isTileInDock(appPath: appPath)
+        return isTileInDock(appPath: canonical)
     }
 
     public static func removeFromDock(appPath: String) -> Bool {
-        let appBundleName = (appPath as NSString).lastPathComponent
+        let canonical = canonicalAppPath(appPath)
         guard let userDefaults = UserDefaults(suiteName: "com.apple.dock"),
               var dockApps = userDefaults.array(forKey: "persistent-apps") as? [[String: Any]] else {
             return false
@@ -45,9 +60,8 @@ public struct DockService {
         let originalCount = dockApps.count
         dockApps.removeAll { item in
             if let tileData = item["tile-data"] as? [String: Any],
-               let fileData = tileData["file-data"] as? [String: Any],
-               let urlStr = fileData["_CFURLString"] as? String {
-                return urlStr.contains(appBundleName) || urlStr.contains(appPath)
+               let path = extractCanonicalPath(from: tileData) {
+                return path == canonical
             }
             return false
         }
@@ -57,6 +71,18 @@ public struct DockService {
             userDefaults.synchronize()
             restartDock()
             return true
+        }
+        return false
+    }
+
+    public static func updateDockPath(oldPath: String, newPath: String) -> Bool {
+        let oldCanonical = canonicalAppPath(oldPath)
+        let newCanonical = canonicalAppPath(newPath)
+        if oldCanonical == newCanonical { return true }
+
+        if isTileInDock(appPath: oldCanonical) {
+            _ = removeFromDock(appPath: oldCanonical)
+            return addToDock(appPath: newCanonical)
         }
         return false
     }

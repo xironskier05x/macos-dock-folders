@@ -22,7 +22,7 @@ public struct TileSidebarView: View {
                     .contextMenu {
                         Button(action: {
                             if let runtimeURL = RuntimeInstallerService.getOrCreateRuntime() {
-                                _ = tileStore.rebuildTile(tile, runtimeURL: runtimeURL)
+                                _ = try? tileStore.rebuildTile(tile, runtimeURL: runtimeURL)
                             }
                         }) {
                             Label("Rebuild Launcher", systemImage: "arrow.clockwise")
