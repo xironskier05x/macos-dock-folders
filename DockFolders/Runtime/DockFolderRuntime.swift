@@ -72,6 +72,10 @@ class RuntimeAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if CommandLine.arguments.contains("--test") {
+            exit(0)
+        }
+
         DispatchQueue.main.async {
             if !self.menuOpened {
                 let presentation = (self.config?.presentation ?? "menu").lowercased()
