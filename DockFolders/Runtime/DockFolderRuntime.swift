@@ -77,14 +77,12 @@ class RuntimeAppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
 
-        DispatchQueue.main.async {
-            if !self.menuOpened {
-                let presentation = (self.config?.presentation ?? "menu").lowercased()
-                if presentation == "grid" {
-                    self.showGridLauncher()
-                } else {
-                    self.showRootMenu()
-                }
+        if !self.menuOpened {
+            let presentation = (self.config?.presentation ?? "menu").lowercased()
+            if presentation == "grid" {
+                self.showGridLauncher()
+            } else {
+                self.showRootMenu()
             }
         }
     }
