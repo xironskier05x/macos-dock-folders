@@ -48,13 +48,17 @@ class SubmenuLoader: NSObject, NSMenuDelegate {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    var config: TileConfig!
+    var config: TileConfig?
     var resolvedTargetURL: URL?
     var submenuHolders: [SubmenuLoader] = []
     var menuOpened = false
+    let maxTopLevelItems = 100
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        loadConfig()
+        if !loadConfig() {
+            failDamagedConfig()
+            return
+        }
         DispatchQueue.main.async {
             if !self.menuOpened {
                 self.showRootMenu()
@@ -62,28 +66,77 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func loadConfig() {
-        guard let configURL = Bundle.main.url(forResource: "config", withExtension: "json"),
-              let data = try? Data(contentsOf: configURL),
-              let decoded = try? JSONDecoder().decode(TileConfig.self, from: data) else {
-            NSLog("Failed to load config.json from bundle")
-            config = TileConfig(targetPath: NSHomeDirectory(), targetBookmarkBase64: nil, displayName: "Folder", sortMode: "name", maxDepth: 3, tileMode: "folder")
-            resolvedTargetURL = URL(fileURLWithPath: NSHomeDirectory())
-            return
-        }
-        self.config = decoded
-        self.resolvedTargetURL = resolveTarget()
+    var appSupportConfigURL: URL? {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return nil }
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let dir = appSupport.appendingPathComponent("macOS Dock Folders").appendingPathComponent(bundleID)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
+        return dir.appendingPathComponent("config.json")
     }
 
-    func resolveTarget() -> URL {
-        if let b64 = config.targetBookmarkBase64, let bookmarkData = Data(base64Encoded: b64) {
+    func loadConfig() -> Bool {
+        // 1. Check mutable state in Application Support (self-healed / updated bookmarks)
+        if let userConfigURL = appSupportConfigURL,
+           let data = try? Data(contentsOf: userConfigURL),
+           let decoded = try? JSONDecoder().decode(TileConfig.self, from: data) {
+            self.config = decoded
+            self.resolvedTargetURL = resolveTarget(from: decoded)
+            return true
+        }
+
+        // 2. Check bundle config.json
+        guard let bundleConfigURL = Bundle.main.url(forResource: "config", withExtension: "json"),
+              let data = try? Data(contentsOf: bundleConfigURL),
+              let decoded = try? JSONDecoder().decode(TileConfig.self, from: data) else {
+            return false // Fail closed! Do not default to NSHomeDirectory()
+        }
+
+        self.config = decoded
+        self.resolvedTargetURL = resolveTarget(from: decoded)
+        return true
+    }
+
+    func persistRepairedConfig(targetURL: URL) {
+        guard var currentConfig = self.config else { return }
+        currentConfig.targetPath = targetURL.path
+        if let bookmarkData = try? targetURL.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil) {
+            currentConfig.targetBookmarkBase64 = bookmarkData.base64EncodedString()
+        }
+        self.config = currentConfig
+
+        if let userConfigURL = appSupportConfigURL,
+           let encoded = try? JSONEncoder().encode(currentConfig) {
+            try? encoded.write(to: userConfigURL)
+        }
+    }
+
+    func failDamagedConfig() {
+        fputs("Error: Dock Folder configuration is damaged or missing.\n", stderr)
+        if CommandLine.arguments.contains("--test") || ProcessInfo.processInfo.environment["CI"] != nil {
+            exit(1)
+        }
+        let alert = NSAlert()
+        alert.messageText = "Dock Folder Configuration Damaged"
+        alert.informativeText = "The configuration for this Dock launcher is missing or corrupted.\nPlease re-run dock-folders.sh to regenerate it."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        exit(1)
+    }
+
+    func resolveTarget(from cfg: TileConfig) -> URL {
+        if let b64 = cfg.targetBookmarkBase64, let bookmarkData = Data(base64Encoded: b64) {
             var isStale = false
             if let resolved = try? URL(resolvingBookmarkData: bookmarkData, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &isStale),
                FileManager.default.fileExists(atPath: resolved.path) {
+                if isStale {
+                    persistRepairedConfig(targetURL: resolved)
+                }
                 return resolved
             }
         }
-        let fallback = URL(fileURLWithPath: config.targetPath)
+        let fallback = URL(fileURLWithPath: cfg.targetPath)
         if FileManager.default.fileExists(atPath: fallback.path) {
             return fallback
         }
@@ -91,9 +144,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func promptRelocate(_ fallback: URL) -> URL {
+        guard let cfg = self.config else { return fallback }
+        if CommandLine.arguments.contains("--test") || ProcessInfo.processInfo.environment["CI"] != nil {
+            return fallback
+        }
         let alert = NSAlert()
-        alert.messageText = "Folder couldn't be found"
-        alert.informativeText = "The target folder \"\(config.displayName)\" could not be located at:\n\(fallback.path)\n\nWould you like to locate it?"
+        alert.messageText = "Folder Couldn't Be Found"
+        alert.informativeText = "The target folder \"\(cfg.displayName)\" could not be located at:\n\(fallback.path)\n\nWould you like to locate it?"
         alert.addButton(withTitle: "Locate Folder…")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
@@ -105,6 +162,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             panel.allowsMultipleSelection = false
             panel.prompt = "Select Folder"
             if panel.runModal() == .OK, let selected = panel.url {
+                persistRepairedConfig(targetURL: selected)
                 return selected
             }
         }
@@ -113,8 +171,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func application(_ app: NSApplication, openFiles filenames: [String]) {
         self.menuOpened = true
-        loadConfig()
-        guard let targetURL = self.resolvedTargetURL else {
+        if !loadConfig() {
+            NSApp.reply(toOpenOrPrint: .failure)
+            NSApp.terminate(nil)
+            return
+        }
+        guard let targetURL = self.resolvedTargetURL, let cfg = self.config else {
             NSApp.reply(toOpenOrPrint: .failure)
             NSApp.terminate(nil)
             return
@@ -126,13 +188,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         for file in filenames {
             let sourceURL = URL(fileURLWithPath: file)
-            // Prevent copying parent into child or identical path
             if targetURL.path.hasPrefix(sourceURL.path + "/") || targetURL.path == sourceURL.path {
                 failureCount += 1
                 continue
             }
 
-            if config.tileMode == "launcher" && sourceURL.pathExtension.lowercased() == "app" {
+            if cfg.tileMode == "launcher" && sourceURL.pathExtension.lowercased() == "app" {
                 let linkURL = targetURL.appendingPathComponent(sourceURL.lastPathComponent)
                 do {
                     if !fm.fileExists(atPath: linkURL.path) {
@@ -162,7 +223,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        NSApp.reply(toOpenOrPrint: failureCount == 0 ? .success : .failure)
+        NSApp.reply(toOpenOrPrint: failureCount == 0 && successCount > 0 ? .success : .failure)
         NSApp.terminate(nil)
     }
 
@@ -170,7 +231,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let mouseLoc = NSEvent.mouseLocation
         let screens = NSScreen.screens
         let currentScreen = screens.first(where: { NSMouseInRect(mouseLoc, $0.frame, false) }) ?? NSScreen.main ?? (screens.isEmpty ? nil : screens[0])
-        let screenFrame = currentScreen?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        guard let screen = currentScreen else {
+            return NSPoint(x: mouseLoc.x, y: 50)
+        }
+
+        let screenFrame = screen.frame
+        let visibleFrame = screen.visibleFrame
 
         let dockOrientation = (UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom").lowercased()
 
@@ -179,16 +245,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         switch dockOrientation {
         case "left":
-            popupX = screenFrame.minX + 50
-            popupY = mouseLoc.y
+            popupX = max(visibleFrame.minX + 6, screenFrame.minX + 45)
+            popupY = max(visibleFrame.minY + 20, min(mouseLoc.y, visibleFrame.maxY - 20))
         case "right":
-            popupX = screenFrame.maxX - 50
-            popupY = mouseLoc.y
+            popupX = min(visibleFrame.maxX - 6, screenFrame.maxX - 45)
+            popupY = max(visibleFrame.minY + 20, min(mouseLoc.y, visibleFrame.maxY - 20))
         case "bottom":
-            popupX = mouseLoc.x
-            popupY = screenFrame.minY + 50
+            popupX = max(visibleFrame.minX + 20, min(mouseLoc.x, visibleFrame.maxX - 20))
+            popupY = max(visibleFrame.minY + 6, screenFrame.minY + 45)
         default:
-            popupY = screenFrame.minY + 50
+            popupX = mouseLoc.x
+            popupY = visibleFrame.minY + 6
         }
 
         return NSPoint(x: popupX, y: popupY)
@@ -203,7 +270,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         var items: [ItemMetadata] = []
         for url in contents {
-            // Resolve alias if needed
             var resolved = url
             let values = try? url.resourceValues(forKeys: Set(keys))
             if values?.isAliasFile == true {
@@ -238,7 +304,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ))
         }
 
-        return sortMetadata(items, mode: config.sortMode)
+        guard let sortMode = self.config?.sortMode else { return items }
+        return sortMetadata(items, mode: sortMode)
     }
 
     func sortMetadata(_ items: [ItemMetadata], mode: String) -> [ItemMetadata] {
@@ -260,7 +327,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func populateMenu(_ menu: NSMenu, for folderURL: URL, depth: Int, maxDepth: Int, sortMode: String) {
-        let items = fetchItems(in: folderURL)
+        let allItems = fetchItems(in: folderURL)
+        let totalCount = allItems.count
+        let items = (depth == 0 && totalCount > maxTopLevelItems) ? Array(allItems.prefix(maxTopLevelItems)) : allItems
         var keyIndex = 1
 
         for item in items {
@@ -274,18 +343,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menuItem.image = item.icon
             menuItem.representedObject = item.resolvedURL.path
 
-            // Submenu rule: true directory, not a package, not an app, within depth limit
             if item.isDirectory && !item.isPackage && !item.isApp && depth < maxDepth {
                 let submenu = NSMenu(title: item.displayName)
                 submenu.minimumWidth = 220
                 submenu.autoenablesItems = false
 
-                // Attach lazy submenu loader
                 let loader = SubmenuLoader(folderURL: item.resolvedURL, depth: depth + 1, maxDepth: maxDepth, sortMode: sortMode, actionTarget: self)
                 submenu.delegate = loader
                 submenuHolders.append(loader)
 
-                // Placeholder item
                 let placeholder = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
                 placeholder.isEnabled = false
                 submenu.addItem(placeholder)
@@ -296,7 +362,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             menu.addItem(menuItem)
 
-            // Alternate Option item: Reveal in Finder
             if !item.isDirectory || item.isPackage || item.isApp || depth >= maxDepth {
                 let altItem = NSMenuItem(title: "Reveal in Finder: \(item.displayName)", action: #selector(revealInFinder(_:)), keyEquivalent: keyEq)
                 altItem.keyEquivalentModifierMask = keyEq.isEmpty ? [.option] : [.option, .command]
@@ -308,7 +373,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        if items.isEmpty {
+        if totalCount > maxTopLevelItems && depth == 0 {
+            menu.addItem(NSMenuItem.separator())
+            let moreItem = NSMenuItem(title: "Show All in Finder… (\(totalCount) items)", action: #selector(openFolderInFinder), keyEquivalent: "")
+            moreItem.target = self
+            menu.addItem(moreItem)
+        }
+
+        if allItems.isEmpty {
             let emptyItem = NSMenuItem(title: "(Folder is empty)", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
             menu.addItem(emptyItem)
@@ -317,25 +389,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func showRootMenu() {
         self.menuOpened = true
-        guard let targetURL = self.resolvedTargetURL else {
-            NSApp.terminate(nil)
+        guard let cfg = self.config, let targetURL = self.resolvedTargetURL else {
+            failDamagedConfig()
             return
         }
 
-        let rootMenu = NSMenu(title: config.displayName)
+        let rootMenu = NSMenu(title: cfg.displayName)
         rootMenu.minimumWidth = 240
         rootMenu.autoenablesItems = false
 
         // Header
-        let headerItem = NSMenuItem(title: config.displayName, action: nil, keyEquivalent: "")
+        let headerItem = NSMenuItem(title: cfg.displayName, action: nil, keyEquivalent: "")
         let headerFont = NSFont.boldSystemFont(ofSize: 13)
-        headerItem.attributedTitle = NSAttributedString(string: config.displayName, attributes: [.font: headerFont])
+        headerItem.attributedTitle = NSAttributedString(string: cfg.displayName, attributes: [.font: headerFont])
         headerItem.isEnabled = false
         rootMenu.addItem(headerItem)
         rootMenu.addItem(NSMenuItem.separator())
 
         // Top level items (instant)
-        populateMenu(rootMenu, for: targetURL, depth: 0, maxDepth: config.maxDepth, sortMode: config.sortMode)
+        populateMenu(rootMenu, for: targetURL, depth: 0, maxDepth: cfg.maxDepth, sortMode: cfg.sortMode)
 
         // Footer
         rootMenu.addItem(NSMenuItem.separator())

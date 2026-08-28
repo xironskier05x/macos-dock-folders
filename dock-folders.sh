@@ -177,6 +177,11 @@ escape_xml() {
     echo "$str"
 }
 
+get_existing_target() {
+    local cfg_file="$1"
+    python3 -c "import json, sys; print(json.load(open(sys.argv[1])).get('targetPath', ''))" "$cfg_file" 2>/dev/null || echo ""
+}
+
 # Creates a 1024x1024 .icns file from SF Symbol, Emoji, Image, or Folder Icon
 create_icns() {
     local folder_path="$1"
@@ -322,6 +327,7 @@ pin_to_dock() {
     if command -v dockutil &>/dev/null; then
         if ! dockutil --find "$app_bundle" &>/dev/null; then
             dockutil --add "$app_bundle" --no-restart >/dev/null 2>&1 || true
+            DOCK_RESTART_NEEDED=true
         fi
     else
         if ! defaults read com.apple.dock persistent-apps 2>/dev/null | grep -Fq "$app_bundle"; then
@@ -351,25 +357,42 @@ for folder_arg in "${FOLDERS[@]}"; do
     folder_name="$(basename "$folder")"
     parent_name="$(basename "$(dirname "$folder")")"
 
-    # Deterministic hash of the canonical path for bundle ID and collision avoidance
+    # Deterministic hash of canonical path for bundle ID and collision avoidance
     folder_hash=$(echo -n "$folder" | shasum -a 256 | head -c 12)
+    short_hash=$(echo -n "$folder" | shasum -a 256 | head -c 6)
     bundle_id="com.macosdockfolders.tile.$folder_hash"
 
-    # Disambiguate app name if needed
+    # Multi-collision resolution:
+    # 1. Try "Folder.app"
+    # 2. If taken by different target -> "Folder (Parent).app"
+    # 3. If that's also taken by different target -> "Folder [hash].app"
     app_name="${folder_name}.app"
     app_path="$OUTPUT_DIR/$app_name"
+
     if [[ -d "$app_path" ]]; then
         existing_cfg="$app_path/Contents/Resources/config.json"
-        if [[ -f "$existing_cfg" ]]; then
-            existing_target=$(python3 -c "import json; print(json.load(open('$existing_cfg')).get('targetPath',''))" 2>/dev/null || true)
-            if [[ -n "$existing_target" && "$existing_target" != "$folder" ]]; then
-                app_name="${folder_name} (${parent_name}).app"
-                app_path="$OUTPUT_DIR/$app_name"
+        existing_target=""
+        [[ -f "$existing_cfg" ]] && existing_target=$(get_existing_target "$existing_cfg")
+        
+        if [[ -n "$existing_target" && "$existing_target" != "$folder" ]]; then
+            # Level 2 candidate
+            app_name="${folder_name} (${parent_name}).app"
+            app_path="$OUTPUT_DIR/$app_name"
+            
+            if [[ -d "$app_path" ]]; then
+                existing_cfg="$app_path/Contents/Resources/config.json"
+                existing_target=""
+                [[ -f "$existing_cfg" ]] && existing_target=$(get_existing_target "$existing_cfg")
+                if [[ -n "$existing_target" && "$existing_target" != "$folder" ]]; then
+                    # Level 3 candidate: unique hash
+                    app_name="${folder_name} [${short_hash}].app"
+                    app_path="$OUTPUT_DIR/$app_name"
+                fi
             fi
         fi
     fi
 
-    echo "📁 Building: $folder_name"
+    echo "📁 Building: $folder_name -> $app_name"
 
     # Safety check: Verify overwrite permission if app already exists
     if [[ -d "$app_path" && "$FORCE" != "true" ]]; then
@@ -381,9 +404,9 @@ for folder_arg in "${FOLDERS[@]}"; do
         fi
     fi
 
-    # Staging directory for atomic build
-    staging_dir=$(mktemp -d "/tmp/dockfolder_build.XXXXXX")
-    staging_app="$staging_dir/$app_name"
+    # Atomic Staging Directory inside $OUTPUT_DIR (guarantees same filesystem for atomic rename)
+    staging_base="$OUTPUT_DIR/.staging_$$"
+    staging_app="$staging_base/$app_name"
     mkdir -p "$staging_app/Contents/MacOS" "$staging_app/Contents/Resources"
 
     # 1. Copy universal runtime binary
@@ -481,7 +504,7 @@ PLIST
     # 6. Validate Info.plist
     if ! plutil -lint "$staging_app/Contents/Info.plist" >/dev/null 2>&1; then
         echo "  ❌ Plist validation failed for $folder_name"
-        rm -rf "$staging_dir"
+        rm -rf "$staging_base"
         continue
     fi
 
@@ -489,21 +512,31 @@ PLIST
     xattr -cr "$staging_app" 2>/dev/null || true
     if ! codesign --force --sign - "$staging_app" >/dev/null 2>&1; then
         echo "  ❌ Code signing failed for $folder_name"
-        rm -rf "$staging_dir"
+        rm -rf "$staging_base"
         continue
     fi
 
     if ! codesign --verify --strict "$staging_app" >/dev/null 2>&1; then
         echo "  ❌ Strict codesign verification failed for $folder_name"
-        rm -rf "$staging_dir"
+        rm -rf "$staging_base"
         continue
     fi
 
-    # 8. Atomically install into final destination
-    rm -rf "$app_path"
-    mv "$staging_app" "$app_path"
-    rm -rf "$staging_dir"
-    touch "$app_path"
+    # 8. True Atomic Install with Backup & Rollback
+    backup_path="$OUTPUT_DIR/.backup_${app_name}_$$"
+    if [[ -d "$app_path" ]]; then
+        mv "$app_path" "$backup_path"
+    fi
+
+    if mv "$staging_app" "$app_path"; then
+        rm -rf "$backup_path" "$staging_base"
+        touch "$app_path"
+    else
+        echo "  ❌ Install failed, rolling back..."
+        [[ -d "$backup_path" ]] && mv "$backup_path" "$app_path"
+        rm -rf "$staging_base"
+        continue
+    fi
 
     # 9. Optional idempotent Dock Pinning
     if $ADD_TO_DOCK; then
