@@ -148,17 +148,32 @@ public class TileStore: ObservableObject {
             allowForeignOverwrite: false
         )
 
-        // Transactional rename & Dock update
+        // Complete Transactional rename & Dock update
         if oldAppPath != newAppPath {
             if wasPinned {
+                // 1. Add new Dock entry
                 let addSuccess = DockService.addToDock(appPath: newAppPath)
                 guard addSuccess && DockService.isTileInDock(appPath: newAppPath) else {
                     // Roll back new app if Dock addition fails
                     try? FileManager.default.removeItem(atPath: newAppPath)
-                    throw TileGenerationError.installFailed("Failed to update Dock entry for renamed tile. Changes rolled back.")
+                    throw TileGenerationError.installFailed("Failed to pin renamed tile to macOS Dock. Changes rolled back.")
                 }
-                _ = DockService.removeFromDock(appPath: oldAppPath)
+
+                // 2. Remove old Dock entry and verify removal
+                let removeOldSuccess = DockService.removeFromDock(appPath: oldAppPath)
+                let oldStillInDock = DockService.isTileInDock(appPath: oldAppPath)
+                guard removeOldSuccess && !oldStillInDock else {
+                    // Removing old Dock entry failed: rollback new app and new Dock entry
+                    _ = DockService.removeFromDock(appPath: newAppPath)
+                    try? FileManager.default.removeItem(atPath: newAppPath)
+                    if !DockService.isTileInDock(appPath: oldAppPath) {
+                        _ = DockService.addToDock(appPath: oldAppPath)
+                    }
+                    throw TileGenerationError.installFailed("Failed to remove old Dock entry during rename. Changes rolled back.")
+                }
             }
+
+            // 3. Only delete old .app after old Dock entry removal is fully verified
             if FileManager.default.fileExists(atPath: oldAppPath) {
                 try? FileManager.default.removeItem(atPath: oldAppPath)
             }
@@ -201,20 +216,25 @@ public class TileStore: ObservableObject {
     }
 
     public func rebuildTile(_ tile: DockTile, runtimeURL: URL) throws -> DockTile {
-        return try updateTile(
-            existingTile: tile,
-            newName: tile.name,
-            targetPath: tile.config.targetPath,
-            mode: tile.config.resolvedTileMode,
-            presentation: tile.config.resolvedPresentationMode,
-            sort: tile.config.resolvedSortMode,
-            maxDepth: tile.config.resolvedMaxDepth,
-            gridColumns: tile.config.resolvedGridColumns,
-            showLabels: tile.config.resolvedShowLabels,
-            iconConfig: tile.config.iconConfig ?? IconConfiguration(),
-            customOrder: tile.config.customOrder,
-            runtimeURL: runtimeURL
-        )
+        do {
+            return try updateTile(
+                existingTile: tile,
+                newName: tile.name,
+                targetPath: tile.config.targetPath,
+                mode: tile.config.resolvedTileMode,
+                presentation: tile.config.resolvedPresentationMode,
+                sort: tile.config.resolvedSortMode,
+                maxDepth: tile.config.resolvedMaxDepth,
+                gridColumns: tile.config.resolvedGridColumns,
+                showLabels: tile.config.resolvedShowLabels,
+                iconConfig: tile.config.iconConfig ?? IconConfiguration(),
+                customOrder: tile.config.customOrder,
+                runtimeURL: runtimeURL
+            )
+        } catch {
+            self.errorMessage = "Failed to rebuild '\(tile.name)': \(error.localizedDescription)"
+            throw error
+        }
     }
 
     public func migrateLegacyTile(_ tile: DockTile, runtimeURL: URL) throws -> DockTile {
@@ -245,6 +265,7 @@ public class TileStore: ObservableObject {
         } catch {
             // 3. Rollback managed collection on failure without mutating tile or original directory
             try? LauncherCollectionService.deleteManagedCollection(collectionID: cid)
+            self.errorMessage = "Failed to migrate '\(tile.name)': \(error.localizedDescription)"
             throw error
         }
     }
@@ -272,7 +293,8 @@ public class TileStore: ObservableObject {
                 tile.isDockPinned = false
                 return true
             } else {
-                self.lastWarningMessage = "Could not remove tile from Dock."
+                let err = "Could not remove '\(tile.name)' from Dock."
+                self.lastWarningMessage = err
                 return false
             }
         } else {
@@ -280,7 +302,8 @@ public class TileStore: ObservableObject {
                 tile.isDockPinned = true
                 return true
             } else {
-                self.lastWarningMessage = "Could not add tile to Dock."
+                let err = "Could not add '\(tile.name)' to Dock."
+                self.lastWarningMessage = err
                 return false
             }
         }

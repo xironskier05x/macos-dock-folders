@@ -1,6 +1,10 @@
 import Foundation
 
 public struct DockService {
+    public static var isTileInDockOverride: ((String) -> Bool)? = nil
+    public static var addToDockOverride: ((String) -> Bool)? = nil
+    public static var removeFromDockOverride: ((String) -> Bool)? = nil
+
     private static func canonicalAppPath(_ path: String) -> String {
         return URL(fileURLWithPath: path).standardizedFileURL.path
     }
@@ -17,6 +21,9 @@ public struct DockService {
     }
 
     public static func isTileInDock(appPath: String) -> Bool {
+        if let override = isTileInDockOverride {
+            return override(appPath)
+        }
         let canonical = canonicalAppPath(appPath)
         if let dockApps = UserDefaults(suiteName: "com.apple.dock")?.array(forKey: "persistent-apps") as? [[String: Any]] {
             for item in dockApps {
@@ -32,6 +39,9 @@ public struct DockService {
     }
 
     public static func addToDock(appPath: String) -> Bool {
+        if let override = addToDockOverride {
+            return override(appPath)
+        }
         let canonical = canonicalAppPath(appPath)
         if isTileInDock(appPath: canonical) {
             return true
@@ -51,6 +61,9 @@ public struct DockService {
     }
 
     public static func removeFromDock(appPath: String) -> Bool {
+        if let override = removeFromDockOverride {
+            return override(appPath)
+        }
         let canonical = canonicalAppPath(appPath)
         guard let userDefaults = UserDefaults(suiteName: "com.apple.dock"),
               var dockApps = userDefaults.array(forKey: "persistent-apps") as? [[String: Any]] else {

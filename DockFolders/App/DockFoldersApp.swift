@@ -26,9 +26,16 @@ struct DockFoldersApp: App {
             CommandMenu("Folder") {
                 Button("Rebuild Selected Launcher") {
                     if let selectedId = selectionStore.selectedTileId,
-                       let tile = tileStore.tile(for: selectedId),
-                       let runtimeURL = RuntimeInstallerService.getOrCreateRuntime() {
-                        _ = try? tileStore.rebuildTile(tile, runtimeURL: runtimeURL)
+                       let tile = tileStore.tile(for: selectedId) {
+                        if let runtimeURL = RuntimeInstallerService.getOrCreateRuntime() {
+                            do {
+                                _ = try tileStore.rebuildTile(tile, runtimeURL: runtimeURL)
+                            } catch {
+                                tileStore.errorMessage = "Failed to rebuild tile: \(error.localizedDescription)"
+                            }
+                        } else {
+                            tileStore.errorMessage = "Could not locate DockFolderRuntime binary."
+                        }
                     }
                 }
                 .keyboardShortcut("r", modifiers: .command)

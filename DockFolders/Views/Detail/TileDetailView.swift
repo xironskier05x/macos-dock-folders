@@ -224,7 +224,13 @@ public struct TileDetailView: View {
         ) {
             Button("Convert", role: .none) {
                 if let runtimeURL = RuntimeInstallerService.getOrCreateRuntime() {
-                    _ = try? tileStore.migrateLegacyTile(tile, runtimeURL: runtimeURL)
+                    do {
+                        _ = try tileStore.migrateLegacyTile(tile, runtimeURL: runtimeURL)
+                    } catch {
+                        tileStore.errorMessage = "Failed to convert legacy launcher: \(error.localizedDescription)"
+                    }
+                } else {
+                    tileStore.errorMessage = "Could not locate DockFolderRuntime binary."
                 }
             }
             Button("Cancel", role: .cancel) {}

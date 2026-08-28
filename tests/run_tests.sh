@@ -268,6 +268,8 @@ swiftc -target arm64-apple-macos13.0 -O \
   DockFolders/Services/*.swift \
   DockFolders/Stores/*.swift \
   DockFolders/Support/*.swift \
+  DockFolders/Runtime/GridLauncherView.swift \
+  DockFolders/Runtime/GridLauncherWindow.swift \
   tests/ManagerIntegrationTests.swift \
   -o "$BUILD_DIR/ManagerIntegrationTests"
 

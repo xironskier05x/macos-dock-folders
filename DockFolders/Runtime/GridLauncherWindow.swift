@@ -2,6 +2,8 @@ import Cocoa
 import SwiftUI
 
 public class GridLauncherWindow: NSPanel, NSWindowDelegate {
+    public var onDismiss: (() -> Void)? = nil
+
     public init(
         title: String,
         targetURL: URL,
@@ -33,37 +35,57 @@ public class GridLauncherWindow: NSPanel, NSWindowDelegate {
             items: items,
             columnsCount: columnsCount,
             showLabels: showLabels,
-            onLaunch: { item in
+            onLaunch: { [weak self] item in
                 if !item.isBroken {
                     NSWorkspace.shared.open(URL(fileURLWithPath: item.resolvedPath))
                 } else {
                     NSSound.beep()
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    NSApp.terminate(nil)
+                    if let handler = self?.onDismiss {
+                        handler()
+                    } else {
+                        NSApp.terminate(nil)
+                    }
                 }
             },
-            onReveal: { item in
+            onReveal: { [weak self] item in
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.resolvedPath)])
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    NSApp.terminate(nil)
+                    if let handler = self?.onDismiss {
+                        handler()
+                    } else {
+                        NSApp.terminate(nil)
+                    }
                 }
             },
-            onOpenFolder: {
+            onOpenFolder: { [weak self] in
                 NSWorkspace.shared.open(targetURL)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    NSApp.terminate(nil)
+                    if let handler = self?.onDismiss {
+                        handler()
+                    } else {
+                        NSApp.terminate(nil)
+                    }
                 }
             },
-            onOpenTerminal: {
+            onOpenTerminal: { [weak self] in
                 let termURL = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
                 NSWorkspace.shared.open([targetURL], withApplicationAt: termURL, configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    NSApp.terminate(nil)
+                    if let handler = self?.onDismiss {
+                        handler()
+                    } else {
+                        NSApp.terminate(nil)
+                    }
                 }
             },
-            onClose: {
-                NSApp.terminate(nil)
+            onClose: { [weak self] in
+                if let handler = self?.onDismiss {
+                    handler()
+                } else {
+                    NSApp.terminate(nil)
+                }
             }
         )
 
@@ -103,14 +125,22 @@ public class GridLauncherWindow: NSPanel, NSWindowDelegate {
     public override var canBecomeMain: Bool { true }
 
     public override func cancelOperation(_ sender: Any?) {
-        NSApp.terminate(nil)
+        if let handler = onDismiss {
+            handler()
+        } else {
+            NSApp.terminate(nil)
+        }
     }
 
     // Dismissal / Click-Outside lifecycle
     public func windowDidResignKey(_ notification: Notification) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             if !self.isKeyWindow {
-                NSApp.terminate(nil)
+                if let handler = self.onDismiss {
+                    handler()
+                } else {
+                    NSApp.terminate(nil)
+                }
             }
         }
     }

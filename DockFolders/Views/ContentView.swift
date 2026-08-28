@@ -24,5 +24,29 @@ public struct ContentView: View {
         .sheet(isPresented: $selectionStore.isShowingSettings) {
             SettingsView()
         }
+        .alert("Notice", isPresented: Binding(
+            get: { tileStore.lastWarningMessage != nil },
+            set: { if !$0 { tileStore.lastWarningMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                tileStore.lastWarningMessage = nil
+            }
+        } message: {
+            if let msg = tileStore.lastWarningMessage {
+                Text(msg)
+            }
+        }
+        .alert("Error", isPresented: Binding(
+            get: { tileStore.errorMessage != nil },
+            set: { if !$0 { tileStore.errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                tileStore.errorMessage = nil
+            }
+        } message: {
+            if let err = tileStore.errorMessage {
+                Text(err)
+            }
+        }
     }
 }

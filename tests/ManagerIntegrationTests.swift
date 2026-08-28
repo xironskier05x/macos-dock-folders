@@ -223,7 +223,7 @@ func runAllTests() {
 
         // Migrate to managed collection
         let newCID = UUID().uuidString
-        let (cid, targetDir, count) = try LauncherCollectionService.migrateLegacyToManaged(legacyURL: legacyDir, newCollectionID: newCID)
+        let (cid, _, count) = try LauncherCollectionService.migrateLegacyToManaged(legacyURL: legacyDir, newCollectionID: newCID)
         assertTest(count == 2 && cid == newCID, "Migrated legacy items into managed collection")
         assertTest(fm.fileExists(atPath: f1.path) && fm.fileExists(atPath: f2.path), "Original legacy folder and files remain untouched")
 
@@ -305,6 +305,174 @@ func runAllTests() {
         assertTest(elapsedMs < 1000, "1,000-item mapping completed in \(Int(elapsedMs))ms (< 1000ms)")
     } catch {
         assertTest(false, "Large directory test failed: \(error)")
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 9: Pinned Rename Transaction & Old Dock Removal Failure Rollback
+    // ─────────────────────────────────────────────────────────────────────────
+    print("\n[Suite 9] Pinned Rename Transaction & Failure Rollback...")
+    do {
+        let store = TileStore()
+        let targetDir = tempDir.appendingPathComponent("RenameTarget")
+        try fm.createDirectory(at: targetDir, withIntermediateDirectories: true)
+        try "content".write(to: targetDir.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+
+        // Mock Dock state in memory
+        var mockDock = Set<String>()
+        DockService.isTileInDockOverride = { mockDock.contains($0) }
+        DockService.addToDockOverride = { mockDock.insert($0); return true }
+        DockService.removeFromDockOverride = { mockDock.remove($0); return true }
+
+        let initialTile = try store.createTile(
+            name: "Initial Launcher",
+            targetPath: targetDir.path,
+            mode: .launcher,
+            presentation: .grid,
+            sort: .custom,
+            maxDepth: 3,
+            gridColumns: 5,
+            showLabels: true,
+            iconConfig: IconConfiguration(),
+            customOrder: nil,
+            collectionID: UUID().uuidString,
+            addToDock: true,
+            runtimeURL: runtimeURL
+        )
+        assertTest(initialTile.isDockPinned && mockDock.contains(initialTile.appPath), "Initial tile created and pinned to Dock")
+
+        let oldPath = initialTile.appPath
+
+        // 1. Successful Rename
+        let renamedTile = try store.updateTile(
+            existingTile: initialTile,
+            newName: "Renamed Launcher",
+            targetPath: targetDir.path,
+            mode: .launcher,
+            presentation: .grid,
+            sort: .custom,
+            maxDepth: 3,
+            gridColumns: 5,
+            showLabels: true,
+            iconConfig: IconConfiguration(),
+            customOrder: nil,
+            runtimeURL: runtimeURL
+        )
+        assertTest(renamedTile.name == "Renamed Launcher", "Tile renamed successfully")
+        assertTest(!fm.fileExists(atPath: oldPath), "Old .app was deleted after successful rename")
+        assertTest(fm.fileExists(atPath: renamedTile.appPath), "New .app exists on disk")
+        assertTest(mockDock.contains(renamedTile.appPath) && !mockDock.contains(oldPath), "Dock updated atomically: old removed, new added")
+
+        // 2. Injected Old Dock Removal Failure -> Rollback
+        let currentAppPath = renamedTile.appPath
+        DockService.removeFromDockOverride = { _ in false } // Inject failure
+
+        var renameFailed = false
+        do {
+            _ = try store.updateTile(
+                existingTile: renamedTile,
+                newName: "Failed Rename Target",
+                targetPath: targetDir.path,
+                mode: .launcher,
+                presentation: .grid,
+                sort: .custom,
+                maxDepth: 3,
+                gridColumns: 5,
+                showLabels: true,
+                iconConfig: IconConfiguration(),
+                customOrder: nil,
+                runtimeURL: runtimeURL
+            )
+        } catch {
+            renameFailed = true
+        }
+
+        assertTest(renameFailed, "Update threw error when old Dock removal failed")
+        assertTest(fm.fileExists(atPath: currentAppPath), "Old app preserved on rollback")
+        assertTest(mockDock.contains(currentAppPath), "Old Dock entry preserved on rollback")
+
+        // Reset Dock overrides
+        DockService.isTileInDockOverride = nil
+        DockService.addToDockOverride = nil
+        DockService.removeFromDockOverride = nil
+    } catch {
+        assertTest(false, "Pinned rename transaction suite failed: \(error)")
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 10: Dock Warning and Error State Surfacing
+    // ─────────────────────────────────────────────────────────────────────────
+    print("\n[Suite 10] Dock Warning and Error State Surfacing...")
+    do {
+        let store = TileStore()
+        let targetDir = tempDir.appendingPathComponent("WarningTarget")
+        try fm.createDirectory(at: targetDir, withIntermediateDirectories: true)
+
+        let tile = try store.createTile(
+            name: "Warning Tile",
+            targetPath: targetDir.path,
+            mode: .launcher,
+            presentation: .grid,
+            sort: .custom,
+            maxDepth: 3,
+            gridColumns: 5,
+            showLabels: true,
+            iconConfig: IconConfiguration(),
+            customOrder: nil,
+            collectionID: UUID().uuidString,
+            addToDock: false,
+            runtimeURL: runtimeURL
+        )
+
+        // Force toggleDockPin failure
+        DockService.addToDockOverride = { _ in false }
+        let toggleSuccess = store.toggleDockPin(for: tile)
+        assertTest(!toggleSuccess, "toggleDockPin returned false on Dock failure")
+        assertTest(store.lastWarningMessage != nil, "Structured warning surfaced in store.lastWarningMessage")
+
+        // Acknowledge / clear warning
+        store.lastWarningMessage = nil
+        assertTest(store.lastWarningMessage == nil, "Warning cleared cleanly")
+
+        DockService.addToDockOverride = nil
+    } catch {
+        assertTest(false, "Dock warning state test failed: \(error)")
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 11: Real Grid Launcher Dismissal Lifecycle
+    // ─────────────────────────────────────────────────────────────────────────
+    print("\n[Suite 11] Real Grid Launcher Dismissal Lifecycle...")
+    do {
+        let dummyURL = tempDir.appendingPathComponent("GridTarget")
+        try fm.createDirectory(at: dummyURL, withIntermediateDirectories: true)
+
+        let gridWin = GridLauncherWindow(
+            title: "Test Grid",
+            targetURL: dummyURL,
+            items: [],
+            columnsCount: 5,
+            showLabels: true,
+            anchorPoint: NSPoint(x: 100, y: 100)
+        )
+
+        var dismissedByEscape = false
+        gridWin.onDismiss = {
+            dismissedByEscape = true
+        }
+        gridWin.cancelOperation(nil)
+        assertTest(dismissedByEscape, "Grid window cancelOperation (Escape) triggers onDismiss")
+
+        var dismissedByResign = false
+        gridWin.onDismiss = {
+            dismissedByResign = true
+        }
+        gridWin.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
+
+        // Run runloop briefly for 0.15s async dispatch
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        assertTest(dismissedByResign, "Grid window windowDidResignKey triggers onDismiss")
+    } catch {
+        assertTest(false, "Grid dismissal lifecycle test failed: \(error)")
     }
 
     // Cleanup
