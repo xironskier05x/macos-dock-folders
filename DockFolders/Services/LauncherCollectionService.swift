@@ -1,17 +1,19 @@
 import Foundation
 
 public enum CollectionServiceError: LocalizedError {
-    case invalidCollectionID
+    case invalidCollectionID(String)
     case collectionNotFound
     case unmanagedContainmentViolation
     case sourceDirectoryNotFound
+    case migrationItemFailed(String)
 
     public var errorDescription: String? {
         switch self {
-        case .invalidCollectionID: return "Invalid or missing collection identifier."
+        case .invalidCollectionID(let reason): return "Invalid collection identifier: \(reason)"
         case .collectionNotFound: return "Managed collection directory was not found."
         case .unmanagedContainmentViolation: return "Safety check failed: cannot modify or delete items outside the managed Collections directory."
         case .sourceDirectoryNotFound: return "Source directory not found for migration."
+        case .migrationItemFailed(let msg): return "Migration aborted: \(msg)"
         }
     }
 }
@@ -24,6 +26,20 @@ public struct LauncherCollectionService {
         return dir.standardizedFileURL
     }
 
+    public static func validateCollectionID(_ collectionID: String) throws -> String {
+        let trimmed = collectionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw CollectionServiceError.invalidCollectionID("Identifier cannot be empty.")
+        }
+        guard !trimmed.contains("/"), !trimmed.contains("\\"), !trimmed.contains(".."), !trimmed.contains(":") else {
+            throw CollectionServiceError.invalidCollectionID("Identifier contains path traversal or invalid characters.")
+        }
+        guard UUID(uuidString: trimmed) != nil || trimmed.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
+            throw CollectionServiceError.invalidCollectionID("Identifier must be a valid UUID or alphanumeric string.")
+        }
+        return trimmed
+    }
+
     public static func isManagedCollection(url: URL) -> Bool {
         let canonicalBase = collectionsBaseURL.standardizedFileURL.path
         let canonicalTarget = url.standardizedFileURL.path
@@ -31,8 +47,14 @@ public struct LauncherCollectionService {
     }
 
     public static func collectionURL(for collectionID: String, createIfMissing: Bool = false) -> URL? {
-        guard !collectionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        let dir = collectionsBaseURL.appendingPathComponent(collectionID).standardizedFileURL
+        guard let validID = try? validateCollectionID(collectionID) else { return nil }
+        let base = collectionsBaseURL.standardizedFileURL
+        let dir = base.appendingPathComponent(validID).standardizedFileURL
+
+        guard dir.deletingLastPathComponent().standardizedFileURL == base else {
+            return nil
+        }
+
         if createIfMissing {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
@@ -40,14 +62,16 @@ public struct LauncherCollectionService {
     }
 
     public static func createManagedCollection(collectionID: String = UUID().uuidString) throws -> (id: String, url: URL) {
-        guard let url = collectionURL(for: collectionID, createIfMissing: true) else {
-            throw CollectionServiceError.invalidCollectionID
+        let validID = try validateCollectionID(collectionID)
+        guard let url = collectionURL(for: validID, createIfMissing: true) else {
+            throw CollectionServiceError.invalidCollectionID("Could not resolve safe collection directory URL.")
         }
-        return (collectionID, url)
+        return (validID, url)
     }
 
     public static func deleteManagedCollection(collectionID: String) throws {
-        guard let url = collectionURL(for: collectionID, createIfMissing: false) else { return }
+        let validID = try validateCollectionID(collectionID)
+        guard let url = collectionURL(for: validID, createIfMissing: false) else { return }
         guard isManagedCollection(url: url) else {
             throw CollectionServiceError.unmanagedContainmentViolation
         }
@@ -121,8 +145,8 @@ public struct LauncherCollectionService {
         if let order = customOrder, !order.isEmpty {
             let orderDict = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
             items.sort {
-                let idx1 = orderDict[$0.id] ?? orderDict[$0.name] ?? 9999
-                let idx2 = orderDict[$1.id] ?? orderDict[$1.name] ?? 9999
+                let idx1 = orderDict[$0.id] ?? orderDict[$0.name] ?? 99999
+                let idx2 = orderDict[$1.id] ?? orderDict[$1.name] ?? 99999
                 if idx1 != idx2 { return idx1 < idx2 }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
@@ -135,21 +159,35 @@ public struct LauncherCollectionService {
 
     public static func migrateLegacyToManaged(legacyURL: URL, newCollectionID: String = UUID().uuidString) throws -> (collectionID: String, collectionURL: URL, migratedCount: Int) {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: legacyURL.path) else {
+        let canonicalLegacy = legacyURL.standardizedFileURL
+        guard fm.fileExists(atPath: canonicalLegacy.path) else {
             throw CollectionServiceError.sourceDirectoryNotFound
         }
 
-        let (cid, targetDir) = try createManagedCollection(collectionID: newCollectionID)
-        let contents = try fm.contentsOfDirectory(at: legacyURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        let validID = try validateCollectionID(newCollectionID)
+        let (cid, targetDir) = try createManagedCollection(collectionID: validID)
 
-        var count = 0
-        for item in contents {
-            let resolved = FileHelpers.resolveAliasOrSymlink(at: item)
-            let destLink = targetDir.appendingPathComponent(item.lastPathComponent)
-            try? fm.createSymbolicLink(at: destLink, withDestinationURL: resolved)
-            count += 1
+        do {
+            let contents = try fm.contentsOfDirectory(at: canonicalLegacy, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            var count = 0
+            for item in contents {
+                let resolved = FileHelpers.resolveAliasOrSymlink(at: item)
+                guard fm.fileExists(atPath: resolved.path) else {
+                    throw CollectionServiceError.migrationItemFailed("Source item at \(item.path) is missing or unresolvable.")
+                }
+                let destLink = targetDir.appendingPathComponent(item.lastPathComponent)
+                try fm.createSymbolicLink(at: destLink, withDestinationURL: resolved)
+                guard fm.fileExists(atPath: destLink.path) || (try? destLink.checkResourceIsReachable()) == true else {
+                    throw CollectionServiceError.migrationItemFailed("Failed to verify created symlink at \(destLink.path)")
+                }
+                count += 1
+            }
+
+            return (cid, targetDir, count)
+        } catch {
+            // Clean up temporary collection on failure
+            try? deleteManagedCollection(collectionID: cid)
+            throw error
         }
-
-        return (cid, targetDir, count)
     }
 }

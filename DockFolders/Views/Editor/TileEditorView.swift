@@ -11,16 +11,17 @@ public struct TileEditorView: View {
     @State private var tileMode: TileMode = .launcher
     @State private var targetPath: String = ""
     @State private var presentationMode: PresentationMode = .grid
-    @State private var sortMode: SortMode = .name
+    @State private var sortMode: SortMode = .custom
     @State private var maxDepth: Int = 3
     @State private var gridColumns: Int = 5
     @State private var showLabels: Bool = true
     @State private var iconConfig: IconConfiguration = IconConfiguration()
     @State private var items: [LauncherItem] = []
     @State private var customOrder: [String]? = nil
-    @State private var addToDock: Bool = true
+    @State private var addToDock: Bool = false
     @State private var draftCollectionID: String = UUID().uuidString
     @State private var isDraftCreated: Bool = false
+    @State private var isLegacy: Bool = false
 
     @State private var errorMessage: String? = nil
     @State private var isShowingError: Bool = false
@@ -68,7 +69,7 @@ public struct TileEditorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Mode Selector (Disabled if editing existing tile to avoid accidental destructive mode switch)
+                    // Mode Selector (Disabled if editing existing tile)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Tile Mode")
                             .font(.subheadline)
@@ -107,7 +108,8 @@ public struct TileEditorView: View {
                         FolderSettingsEditor(targetPath: $targetPath, maxDepth: $maxDepth)
                     } else {
                         LauncherItemsEditor(
-                            tileID: draftCollectionID,
+                            tileID: isLegacy ? "" : draftCollectionID,
+                            isReadOnly: isLegacy,
                             items: $items,
                             customOrder: $customOrder
                         )
@@ -183,13 +185,22 @@ public struct TileEditorView: View {
                 showLabels = tile.config.resolvedShowLabels
                 iconConfig = tile.config.iconConfig ?? IconConfiguration()
                 customOrder = tile.config.customOrder
-                draftCollectionID = tile.config.collectionID ?? UUID().uuidString
+                isLegacy = tile.config.isLegacyLauncher
+                draftCollectionID = tile.config.collectionID ?? ""
                 items = tile.items
                 addToDock = tile.isDockPinned
                 isDraftCreated = false
             } else {
+                let prefs = PreferencesStore.shared
+                tileMode = prefs.defaultTileMode
+                presentationMode = prefs.defaultPresentation
+                gridColumns = prefs.defaultGridColumns
+                showLabels = prefs.defaultShowLabels
+                sortMode = prefs.defaultSortMode
+                addToDock = prefs.autoAddToDock
                 draftCollectionID = UUID().uuidString
                 isDraftCreated = true
+                isLegacy = false
             }
         }
     }
@@ -239,6 +250,11 @@ public struct TileEditorView: View {
                     let (_, colURL) = try LauncherCollectionService.createManagedCollection(collectionID: draftCollectionID)
                     resolvedTarget = colURL.path
                     cid = draftCollectionID
+                } else {
+                    // Mode is Folder: clean up draft collection if one was initialized
+                    if isDraftCreated {
+                        try? LauncherCollectionService.deleteManagedCollection(collectionID: draftCollectionID)
+                    }
                 }
 
                 let newTile = try tileStore.createTile(

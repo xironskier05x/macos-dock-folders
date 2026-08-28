@@ -6,6 +6,7 @@ public class TileStore: ObservableObject {
     @Published public var tiles: [DockTile] = []
     @Published public var isLoading: Bool = false
     @Published public var errorMessage: String?
+    @Published public var lastWarningMessage: String?
 
     public init() {
         loadTiles()
@@ -57,10 +58,17 @@ public class TileStore: ObservableObject {
             runtimeURL: runtimeURL
         )
 
+        var isPinned = false
         if addToDock {
-            _ = DockService.addToDock(appPath: appPath)
+            let added = DockService.addToDock(appPath: appPath)
+            isPinned = DockService.isTileInDock(appPath: appPath)
+            if !added || !isPinned {
+                let warning = "Launcher created successfully, but it could not be added to the Dock."
+                self.lastWarningMessage = warning
+            }
+        } else {
+            isPinned = DockService.isTileInDock(appPath: appPath)
         }
-        let isPinned = DockService.isTileInDock(appPath: appPath)
 
         var items: [LauncherItem] = []
         if mode == .launcher {
@@ -115,10 +123,12 @@ public class TileStore: ObservableObject {
         showLabels: Bool,
         iconConfig: IconConfiguration,
         customOrder: [String]?,
-        runtimeURL: URL
+        runtimeURL: URL,
+        newCollectionID: String? = nil
     ) throws -> DockTile {
         let oldAppPath = existingTile.appPath
         let wasPinned = DockService.isTileInDock(appPath: oldAppPath)
+        let finalCollectionID = newCollectionID ?? existingTile.config.collectionID
 
         let newAppPath = try TileGeneratorService.generateTile(
             name: newName,
@@ -131,17 +141,23 @@ public class TileStore: ObservableObject {
             showLabels: showLabels,
             iconConfig: iconConfig,
             customOrder: customOrder,
-            collectionID: existingTile.config.collectionID,
+            collectionID: finalCollectionID,
             outputDirectory: PreferencesStore.shared.defaultOutputDirectory,
             runtimeURL: runtimeURL,
-            force: true
+            allowedExistingAppURL: URL(fileURLWithPath: oldAppPath),
+            allowForeignOverwrite: false
         )
 
-        // If app filename changed, update Dock entry and delete old app
+        // Transactional rename & Dock update
         if oldAppPath != newAppPath {
             if wasPinned {
+                let addSuccess = DockService.addToDock(appPath: newAppPath)
+                guard addSuccess && DockService.isTileInDock(appPath: newAppPath) else {
+                    // Roll back new app if Dock addition fails
+                    try? FileManager.default.removeItem(atPath: newAppPath)
+                    throw TileGenerationError.installFailed("Failed to update Dock entry for renamed tile. Changes rolled back.")
+                }
                 _ = DockService.removeFromDock(appPath: oldAppPath)
-                _ = DockService.addToDock(appPath: newAppPath)
             }
             if FileManager.default.fileExists(atPath: oldAppPath) {
                 try? FileManager.default.removeItem(atPath: oldAppPath)
@@ -173,7 +189,7 @@ public class TileStore: ObservableObject {
             gridColumns: gridColumns,
             showLabels: showLabels,
             customOrder: customOrder,
-            collectionID: existingTile.config.collectionID,
+            collectionID: finalCollectionID,
             iconConfig: iconConfig
         )
 
@@ -204,23 +220,33 @@ public class TileStore: ObservableObject {
     public func migrateLegacyTile(_ tile: DockTile, runtimeURL: URL) throws -> DockTile {
         guard tile.config.isLegacyLauncher else { return tile }
         let legacyURL = URL(fileURLWithPath: tile.config.targetPath)
+        
+        // 1. Transactionally migrate into a temporary managed collection
         let (cid, targetDir, _) = try LauncherCollectionService.migrateLegacyToManaged(legacyURL: legacyURL)
 
-        tile.config.collectionID = cid
-        return try updateTile(
-            existingTile: tile,
-            newName: tile.name,
-            targetPath: targetDir.path,
-            mode: .launcher,
-            presentation: tile.config.resolvedPresentationMode,
-            sort: tile.config.resolvedSortMode,
-            maxDepth: tile.config.resolvedMaxDepth,
-            gridColumns: tile.config.resolvedGridColumns,
-            showLabels: tile.config.resolvedShowLabels,
-            iconConfig: tile.config.iconConfig ?? IconConfiguration(),
-            customOrder: tile.config.customOrder,
-            runtimeURL: runtimeURL
-        )
+        do {
+            // 2. Generate and update tile with new collection
+            let migratedTile = try updateTile(
+                existingTile: tile,
+                newName: tile.name,
+                targetPath: targetDir.path,
+                mode: .launcher,
+                presentation: tile.config.resolvedPresentationMode,
+                sort: tile.config.resolvedSortMode,
+                maxDepth: tile.config.resolvedMaxDepth,
+                gridColumns: tile.config.resolvedGridColumns,
+                showLabels: tile.config.resolvedShowLabels,
+                iconConfig: tile.config.iconConfig ?? IconConfiguration(),
+                customOrder: tile.config.customOrder,
+                runtimeURL: runtimeURL,
+                newCollectionID: cid
+            )
+            return migratedTile
+        } catch {
+            // 3. Rollback managed collection on failure without mutating tile or original directory
+            try? LauncherCollectionService.deleteManagedCollection(collectionID: cid)
+            throw error
+        }
     }
 
     public func deleteTile(_ tile: DockTile, deleteCollection: Bool = false) {
@@ -239,14 +265,23 @@ public class TileStore: ObservableObject {
         }
     }
 
-    public func toggleDockPin(for tile: DockTile) {
+    @discardableResult
+    public func toggleDockPin(for tile: DockTile) -> Bool {
         if tile.isDockPinned {
             if DockService.removeFromDock(appPath: tile.appPath) {
                 tile.isDockPinned = false
+                return true
+            } else {
+                self.lastWarningMessage = "Could not remove tile from Dock."
+                return false
             }
         } else {
-            if DockService.addToDock(appPath: tile.appPath) {
+            if DockService.addToDock(appPath: tile.appPath) && DockService.isTileInDock(appPath: tile.appPath) {
                 tile.isDockPinned = true
+                return true
+            } else {
+                self.lastWarningMessage = "Could not add tile to Dock."
+                return false
             }
         }
     }

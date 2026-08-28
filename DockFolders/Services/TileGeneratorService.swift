@@ -28,14 +28,65 @@ public enum TileGenerationError: LocalizedError {
 }
 
 public struct TileGeneratorService {
-    public static func resolveSafeAppPath(name: String, targetPath: String, outputDirectory: URL, force: Bool = false) throws -> (appURL: URL, appName: String) {
+    public static func isDockFoldersApp(at appURL: URL) -> Bool {
+        let plistURL = appURL.appendingPathComponent("Contents/Info.plist")
+        guard FileManager.default.fileExists(atPath: plistURL.path),
+              let plistData = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: plistData, format: nil) as? [String: Any],
+              let isDockFolder = plist["DockFoldersGenerated"] as? Bool, isDockFolder else {
+            return false
+        }
+        return true
+    }
+
+    public static func resolveSafeAppPath(
+        name: String,
+        targetPath: String,
+        outputDirectory: URL,
+        allowedExistingAppURL: URL? = nil,
+        allowForeignOverwrite: Bool = false
+    ) throws -> (appURL: URL, appName: String) {
         let validName = try FileHelpers.validateTileName(name)
         let fm = FileManager.default
         let canonicalOut = outputDirectory.standardizedFileURL
+        let canonicalAllowed = allowedExistingAppURL?.standardizedFileURL
 
         let targetURL = URL(fileURLWithPath: targetPath).standardizedFileURL
         let parentName = targetURL.deletingLastPathComponent().lastPathComponent
         let shortHash = FileHelpers.deterministicHash(for: targetPath, length: 6)
+
+        func checkCandidate(url: URL) throws -> Bool {
+            if !fm.fileExists(atPath: url.path) { return true }
+
+            // Check if this candidate is the explicitly allowed existing tile being edited
+            if let allowed = canonicalAllowed, url.standardizedFileURL.path == allowed.path {
+                if isDockFoldersApp(at: url) || allowForeignOverwrite {
+                    return true
+                }
+                throw TileGenerationError.unrelatedAppCollision(url.path)
+            }
+
+            // Otherwise, candidate exists on disk and is NOT the allowed existing tile.
+            let isDF = isDockFoldersApp(at: url)
+            if !isDF {
+                if allowForeignOverwrite { return true }
+                // Candidate is a foreign/unrelated app — do NOT overwrite, proceed to disambiguation
+                return false
+            }
+
+            // Candidate is another Dock Folders app. Check if it targets the same exact folder.
+            let configURL = url.appendingPathComponent("Contents/Resources/config.json")
+            if let cfgData = try? Data(contentsOf: configURL),
+               let cfg = try? JSONDecoder().decode(DockTileConfig.self, from: cfgData) {
+                let existingTarget = URL(fileURLWithPath: cfg.targetPath).standardizedFileURL.path
+                if existingTarget == targetURL.path {
+                    return true // Same target: safe to update
+                }
+            }
+
+            // Collides with a different Dock Folders tile: proceed to disambiguation
+            return false
+        }
 
         // Candidate 1: Name.app
         var candidateName = "\(validName).app"
@@ -43,31 +94,6 @@ public struct TileGeneratorService {
 
         guard FileHelpers.isChild(childURL: candidateURL, of: canonicalOut) else {
             throw TileGenerationError.outputDirectoryEscape
-        }
-
-        func checkCandidate(url: URL) throws -> Bool {
-            if !fm.fileExists(atPath: url.path) { return true }
-            
-            // Check if dock folder
-            let plistURL = url.appendingPathComponent("Contents/Info.plist")
-            guard fm.fileExists(atPath: plistURL.path),
-                  let plistData = try? Data(contentsOf: plistURL),
-                  let plist = try? PropertyListSerialization.propertyList(from: plistData, format: nil) as? [String: Any],
-                  let isDockFolder = plist["DockFoldersGenerated"] as? Bool, isDockFolder else {
-                if force { return true }
-                throw TileGenerationError.unrelatedAppCollision(url.path)
-            }
-
-            // Check if matches same target
-            let configURL = url.appendingPathComponent("Contents/Resources/config.json")
-            if let cfgData = try? Data(contentsOf: configURL),
-               let cfg = try? JSONDecoder().decode(DockTileConfig.self, from: cfgData) {
-                let existingTarget = URL(fileURLWithPath: cfg.targetPath).standardizedFileURL.path
-                if existingTarget == targetURL.path {
-                    return true // Same target: safe to update in place
-                }
-            }
-            return false
         }
 
         if try checkCandidate(url: candidateURL) {
@@ -96,6 +122,12 @@ public struct TileGeneratorService {
             return (candidateURL, candidateName)
         }
 
+        // If candidate 1 exists and is foreign, give a clear unrelated app error
+        let baseCandidate = canonicalOut.appendingPathComponent("\(validName).app").standardizedFileURL
+        if fm.fileExists(atPath: baseCandidate.path) && !isDockFoldersApp(at: baseCandidate) {
+            throw TileGenerationError.unrelatedAppCollision(baseCandidate.path)
+        }
+
         throw TileGenerationError.collisionLimitExceeded(validName)
     }
 
@@ -113,7 +145,8 @@ public struct TileGeneratorService {
         collectionID: String? = nil,
         outputDirectory: URL = TileDiscoveryService.defaultOutputDirectory,
         runtimeURL: URL,
-        force: Bool = false
+        allowedExistingAppURL: URL? = nil,
+        allowForeignOverwrite: Bool = false
     ) throws -> String {
         let fm = FileManager.default
         let canonicalOut = outputDirectory.standardizedFileURL
@@ -123,7 +156,13 @@ public struct TileGeneratorService {
             throw TileGenerationError.runtimeNotFound
         }
 
-        let (destinationURL, appName) = try resolveSafeAppPath(name: name, targetPath: targetPath, outputDirectory: canonicalOut, force: force)
+        let (destinationURL, appName) = try resolveSafeAppPath(
+            name: name,
+            targetPath: targetPath,
+            outputDirectory: canonicalOut,
+            allowedExistingAppURL: allowedExistingAppURL,
+            allowForeignOverwrite: allowForeignOverwrite
+        )
         let appPath = destinationURL.path
         let bundleID = FileHelpers.bundleIdentifier(for: targetPath)
 

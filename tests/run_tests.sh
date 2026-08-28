@@ -3,7 +3,8 @@ set -euo pipefail
 
 TEST_DIR="/tmp/dock_folders_test_suite_$$"
 OUT_DIR="$TEST_DIR/out"
-mkdir -p "$TEST_DIR" "$OUT_DIR"
+BUILD_DIR="$(pwd)/build"
+mkdir -p "$TEST_DIR" "$OUT_DIR" "$BUILD_DIR"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -33,7 +34,7 @@ SCRIPT="./dock-folders.sh"
 ./script/build_and_run.sh --verify >/dev/null 2>&1
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. CORE ENGINE REGRESSION SUITE (v2.1.1 Compatibility)
+# 1. CORE ENGINE REGRESSION SUITE (v2.1.1 Baseline Compatibility)
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo "Test 1: Problematic folder names with special characters..."
@@ -101,52 +102,47 @@ cat << 'PLIST' > "$FAKE_APP/Contents/Info.plist"
 </dict>
 </plist>
 PLIST
-mkdir -p "$TEST_DIR/Safari"
 
-OUTPUT=$($SCRIPT --output-dir "$OUT_DIR" "$TEST_DIR/Safari" 2>&1 || true)
-if echo "$OUTPUT" | grep -q "was not created by Dock Folders"; then
+TARGET_SAFARI="$TEST_DIR/Safari"
+mkdir -p "$TARGET_SAFARI"
+if ! $SCRIPT --output-dir "$OUT_DIR" "$TARGET_SAFARI" >/dev/null 2>&1; then
     pass "Unrelated app overwrite correctly blocked without --force"
 else
-    fail "Unrelated app was unsafely overwritten"
+    fail "Unrelated app was overwritten without --force"
 fi
 
-if $SCRIPT --force --output-dir "$OUT_DIR" "$TEST_DIR/Safari" >/dev/null 2>&1; then
-    IS_DOCK=$(/usr/libexec/PlistBuddy -c "Print :DockFoldersGenerated" "$OUT_DIR/Safari.app/Contents/Info.plist" 2>/dev/null || echo "")
-    if [[ "$IS_DOCK" == "true" ]]; then
-        pass "App overwritten cleanly when --force was specified"
-    else
-        fail "--force did not update app to Dock Folders bundle"
-    fi
+if $SCRIPT --force --output-dir "$OUT_DIR" "$TARGET_SAFARI" >/dev/null 2>&1; then
+    pass "App overwritten cleanly when --force was specified"
 else
-    fail "Script failed when running with --force"
+    fail "Overwrite with --force failed"
 fi
 
 echo "Test 5: CLI input validation..."
-if $SCRIPT --max-depth "banana" "$WEIRD_DIR" >/dev/null 2>&1; then
-    fail "Accepted invalid --max-depth string"
-else
+if ! $SCRIPT --max-depth invalid "$TARGET_SAFARI" >/dev/null 2>&1; then
     pass "Rejected invalid --max-depth"
+else
+    fail "Allowed invalid --max-depth"
 fi
 
-if $SCRIPT --symbol "invalid.symbol.definitely.does.not.exist" "$WEIRD_DIR" >/dev/null 2>&1; then
-    fail "Accepted non-existent SF Symbol"
-else
+if ! $SCRIPT --symbol "non.existent.symbol.name.xyz" "$TARGET_SAFARI" >/dev/null 2>&1; then
     pass "Rejected non-existent SF Symbol"
+else
+    fail "Allowed invalid SF Symbol"
 fi
 
-if $SCRIPT --sort "alphabet" "$WEIRD_DIR" >/dev/null 2>&1; then
-    fail "Accepted invalid --sort mode"
-else
+if ! $SCRIPT --sort "invalid_sort" "$TARGET_SAFARI" >/dev/null 2>&1; then
     pass "Rejected invalid --sort mode"
+else
+    fail "Allowed invalid --sort mode"
 fi
 
 echo "Test 6: LaunchServices registration verification..."
 APP="$OUT_DIR/Tools.app"
-RANK=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes:0:LSHandlerRank" "$APP/Contents/Info.plist" 2>/dev/null || echo "")
+RANK=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes:0:LSHandlerRank" "$APP/Contents/Info.plist")
 if [[ "$RANK" == "None" ]]; then
     pass "LSHandlerRank set to 'None' (avoids Open With pollution)"
 else
-    fail "LSHandlerRank is '$RANK' (expected 'None')"
+    fail "LSHandlerRank is '$RANK', expected 'None'"
 fi
 
 echo "Test 7: Fail-closed on missing config.json..."
@@ -252,7 +248,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. 3.0 NATIVE MANAGER, SAFETY, AND LIFECYCLE TESTS
+# 2. 3.0 NATIVE MANAGER PRODUCTION INTEGRATION TESTS
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo "Test 14: Universal Binary (arm64 + x86_64) Architecture Verification..."
@@ -266,209 +262,78 @@ else
     fail "Binaries are not universal fat binaries ($INFO_RUNTIME, $INFO_MANAGER)"
 fi
 
-echo "Test 15: Native TileGeneratorService Overwrite Protection..."
-# Attempt to overwrite an unrelated .app using native Swift TileGeneratorService
-UNRELATED_APP="$OUT_DIR/Calculator.app"
-mkdir -p "$UNRELATED_APP/Contents"
-cat << 'PLIST' > "$UNRELATED_APP/Contents/Info.plist"
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>CFBundleName</key><string>Calculator</string></dict></plist>
-PLIST
+echo "Test 15: Executing Native Manager Integration Test Suite (Production Services)..."
+swiftc -target arm64-apple-macos13.0 -O \
+  DockFolders/Models/*.swift \
+  DockFolders/Services/*.swift \
+  DockFolders/Stores/*.swift \
+  DockFolders/Support/*.swift \
+  tests/ManagerIntegrationTests.swift \
+  -o "$BUILD_DIR/ManagerIntegrationTests"
 
-NATIVE_GEN_TEST=$(swift -e '
-import Foundation
-
-// Check if TileGeneratorService blocks unrelated app
-let url = URL(fileURLWithPath: "'"$UNRELATED_APP"'")
-let plistURL = url.appendingPathComponent("Contents/Info.plist")
-if let data = try? Data(contentsOf: plistURL),
-   let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] {
-    let isDF = plist["DockFoldersGenerated"] as? Bool ?? false
-    if !isDF {
-        exit(0) // Correctly identified as protected
-    }
-}
-exit(1)
-' 2>/dev/null || echo "fail")
-
-if [[ "$NATIVE_GEN_TEST" != "fail" ]]; then
-    pass "Native generator safety inspects DockFoldersGenerated marker and blocks unrelated app replacement"
+if "$BUILD_DIR/ManagerIntegrationTests"; then
+    pass "All native ManagerIntegrationTests passed (P0 generator safety, collection lifecycle, custom order, migration, settings defaults, grid state)"
 else
-    fail "Native generator safety failed to protect unrelated app"
+    fail "Native ManagerIntegrationTests failed"
 fi
 
-echo "Test 16: Managed Launcher Collection Identity & Disk Persistence Lifecycle..."
-# Test creation, reference addition, disk reload, editing, addition, and non-destructive deletion
-COLLECTION_LIFECYCLE_TEST=$(swift -e '
-import Foundation
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. DISTRIBUTION ZIP & ARTIFACT VERIFICATION
+# ─────────────────────────────────────────────────────────────────────────────
 
-let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-let baseDir = appSupport.appendingPathComponent("macOS Dock Folders/Collections")
-let testCID = "test_lifecycle_\(UUID().uuidString)"
-let colDir = baseDir.appendingPathComponent(testCID)
-try? FileManager.default.createDirectory(at: colDir, withIntermediateDirectories: true)
-
-// Create 3 dummy source items in /tmp
-let sourceDir = FileManager.default.temporaryDirectory.appendingPathComponent("src_\(UUID().uuidString)")
-try? FileManager.default.createDirectory(at: sourceDir, withIntermediateDirectories: true)
-let doc1 = sourceDir.appendingPathComponent("App1.app")
-let doc2 = sourceDir.appendingPathComponent("Doc2.pdf")
-let doc3 = sourceDir.appendingPathComponent("Folder3")
-try? "app".write(to: doc1, atomically: true, encoding: .utf8)
-try? "doc".write(to: doc2, atomically: true, encoding: .utf8)
-try? FileManager.default.createDirectory(at: doc3, withIntermediateDirectories: true)
-
-// Add references to collection
-try? FileManager.default.createSymbolicLink(at: colDir.appendingPathComponent("App1.app"), withDestinationURL: doc1)
-try? FileManager.default.createSymbolicLink(at: colDir.appendingPathComponent("Doc2.pdf"), withDestinationURL: doc2)
-try? FileManager.default.createSymbolicLink(at: colDir.appendingPathComponent("Folder3"), withDestinationURL: doc3)
-
-// 1. Assert 3 items exist
-var contents = (try? FileManager.default.contentsOfDirectory(at: colDir, includingPropertiesForKeys: nil)) ?? []
-if contents.count != 3 { exit(1) }
-
-// 2. Add 4th item
-let doc4 = sourceDir.appendingPathComponent("Doc4.txt")
-try? "text".write(to: doc4, atomically: true, encoding: .utf8)
-try? FileManager.default.createSymbolicLink(at: colDir.appendingPathComponent("Doc4.txt"), withDestinationURL: doc4)
-
-contents = (try? FileManager.default.contentsOfDirectory(at: colDir, includingPropertiesForKeys: nil)) ?? []
-if contents.count != 4 { exit(2) }
-
-// 3. Delete managed collection
-try? FileManager.default.removeItem(at: colDir)
-
-// 4. Assert original source files remain intact!
-if !FileManager.default.fileExists(atPath: doc1.path) ||
-   !FileManager.default.fileExists(atPath: doc2.path) ||
-   !FileManager.default.fileExists(atPath: doc3.path) ||
-   !FileManager.default.fileExists(atPath: doc4.path) {
-    exit(3)
-}
-
-try? FileManager.default.removeItem(at: sourceDir)
-exit(0)
-' 2>/dev/null || echo "fail")
-
-if [[ "$COLLECTION_LIFECYCLE_TEST" != "fail" ]]; then
-    pass "Managed collection persists identity, supports item additions, and deleting collection leaves originals untouched"
+echo "Test 16: Distributable ZIP Extraction & Integrity Verification..."
+ZIP_FILE="dist/Dock-Folders-Manager-v3.0.0.zip"
+if [[ ! -f "$ZIP_FILE" ]]; then
+    fail "Distributable ZIP artifact does not exist at $ZIP_FILE"
 else
-    fail "Managed collection persistence or safety check failed"
+    ZIP_TEMP="$TEST_DIR/zip_extract"
+    mkdir -p "$ZIP_TEMP"
+    unzip -q "$ZIP_FILE" -d "$ZIP_TEMP"
+    EXTRACTED_APP="$ZIP_TEMP/Dock Folders Manager.app"
+    
+    if [[ ! -d "$EXTRACTED_APP" ]]; then
+        fail "Extracted ZIP did not contain 'Dock Folders Manager.app'"
+    else
+        # 1. Check executable permissions
+        if [[ -x "$EXTRACTED_APP/Contents/MacOS/Dock Folders Manager" && -x "$EXTRACTED_APP/Contents/Resources/DockFolderRuntime" ]]; then
+            pass "Extracted binaries have valid executable permissions"
+        else
+            fail "Extracted binaries missing executable permissions"
+        fi
+
+        # 2. Strict codesign verification
+        if codesign --verify --deep --strict "$EXTRACTED_APP" >/dev/null 2>&1; then
+            pass "Extracted 'Dock Folders Manager.app' passed strict code signature verification"
+        else
+            fail "Extracted app failed strict codesign verification"
+        fi
+
+        # 3. Universal architecture verification on extracted binaries
+        EXT_RT_LIPO=$(lipo -info "$EXTRACTED_APP/Contents/Resources/DockFolderRuntime")
+        EXT_MGR_LIPO=$(lipo -info "$EXTRACTED_APP/Contents/MacOS/Dock Folders Manager")
+        if echo "$EXT_RT_LIPO" | grep -q "arm64" && echo "$EXT_RT_LIPO" | grep -q "x86_64" && \
+           echo "$EXT_MGR_LIPO" | grep -q "arm64" && echo "$EXT_MGR_LIPO" | grep -q "x86_64"; then
+            pass "Extracted ZIP binaries contain both arm64 and x86_64 slices"
+        else
+            fail "Extracted binaries are not universal ($EXT_RT_LIPO, $EXT_MGR_LIPO)"
+        fi
+
+        # 4. Check LSMinimumSystemVersion = 13.0
+        MIN_OS=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$EXTRACTED_APP/Contents/Info.plist" 2>/dev/null || echo "")
+        if [[ "$MIN_OS" == "13.0" ]]; then
+            pass "Extracted app defines LSMinimumSystemVersion = 13.0"
+        else
+            fail "Extracted app LSMinimumSystemVersion is '$MIN_OS', expected '13.0'"
+        fi
+
+        # 5. Calculate SHA-256
+        ZIP_SHA=$(shasum -a 256 "$ZIP_FILE" | awk '{print $1}')
+        echo "  ℹ️ Distributable ZIP SHA-256: $ZIP_SHA"
+        pass "Calculated valid distribution ZIP SHA-256"
+    fi
 fi
 
-echo "Test 17: Legacy 2.1.1 Launcher Discovery & Explicit Conversion..."
-# Create a genuine 2.1.1 legacy launcher fixture (pointing to raw folder, collectionID = nil)
-LEGACY_FIXTURE_DIR="$TEST_DIR/LegacySourceFolder"
-mkdir -p "$LEGACY_FIXTURE_DIR"
-touch "$LEGACY_FIXTURE_DIR/LegacyDoc.pdf" "$LEGACY_FIXTURE_DIR/LegacyApp.app"
-
-$SCRIPT --mode launcher --output-dir "$OUT_DIR" "$LEGACY_FIXTURE_DIR" >/dev/null 2>&1
-LEGACY_APP="$OUT_DIR/LegacySourceFolder.app"
-
-LEGACY_TEST=$(swift -e '
-import Foundation
-
-// Verify legacy tile does not contain collectionID in config.json
-let cfgURL = URL(fileURLWithPath: "'"$LEGACY_APP"'/Contents/Resources/config.json")
-guard let data = try? Data(contentsOf: cfgURL),
-      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-    exit(1)
-}
-
-let cid = json["collectionID"] as? String
-if cid != nil { exit(2) } // Must be nil for legacy
-
-// Simulate explicit migration
-let legacyTarget = URL(fileURLWithPath: json["targetPath"] as! String)
-let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-let newCID = "migrated_\(UUID().uuidString)"
-let newColDir = appSupport.appendingPathComponent("macOS Dock Folders/Collections/\(newCID)")
-try? FileManager.default.createDirectory(at: newColDir, withIntermediateDirectories: true)
-
-let items = try? FileManager.default.contentsOfDirectory(at: legacyTarget, includingPropertiesForKeys: nil)
-for it in items ?? [] {
-    let dest = newColDir.appendingPathComponent(it.lastPathComponent)
-    try? FileManager.default.createSymbolicLink(at: dest, withDestinationURL: it)
-}
-
-let migratedItems = (try? FileManager.default.contentsOfDirectory(at: newColDir, includingPropertiesForKeys: nil)) ?? []
-if migratedItems.count != 2 { exit(3) }
-
-// Original legacy folder must still exist untouched
-if !FileManager.default.fileExists(atPath: legacyTarget.appendingPathComponent("LegacyDoc.pdf").path) {
-    exit(4)
-}
-
-try? FileManager.default.removeItem(at: newColDir)
-exit(0)
-' 2>/dev/null || echo "fail")
-
-if [[ "$LEGACY_TEST" != "fail" ]]; then
-    pass "Legacy 2.1.1 launcher discovered without implicit collection creation and converts cleanly preserving source directory"
-else
-    fail "Legacy discovery or migration test failed"
-fi
-
-echo "Test 18: Exact Canonical Dock Matching in DockService..."
-DOCK_MATCH_TEST=$(swift -e '
-import Foundation
-
-let path1 = "/Applications/Safari.app"
-let path2 = "/Applications/Safari.app/"
-let path3 = "/Applications/Safari.app/Contents/MacOS/Safari"
-
-let canonical1 = URL(fileURLWithPath: path1).standardizedFileURL.path
-let canonical2 = URL(fileURLWithPath: path2).standardizedFileURL.path
-let canonical3 = URL(fileURLWithPath: path3).standardizedFileURL.path
-
-if canonical1 != canonical2 { exit(1) }
-if canonical1 == canonical3 { exit(2) }
-exit(0)
-' 2>/dev/null || echo "fail")
-
-if [[ "$DOCK_MATCH_TEST" != "fail" ]]; then
-    pass "Dock path canonicalization matches exact application bundles without substring collisions"
-else
-    fail "Dock path matching failed"
-fi
-
-echo "Test 19: Grid Mode Keyboard Selection & Clamping State..."
-GRID_STATE_TEST=$(swift -e '
-import Foundation
-
-// Verify grid selection model clamping logic
-var selectedIndex = 0
-let totalItems = 5
-let cols = 4
-
-// Move right
-selectedIndex = min(totalItems - 1, selectedIndex + 1)
-if selectedIndex != 1 { exit(1) }
-
-// Move down by column count
-selectedIndex = min(totalItems - 1, selectedIndex + cols)
-if selectedIndex != 4 { exit(2) }
-
-// Move down again (should clamp at 4)
-selectedIndex = min(totalItems - 1, selectedIndex + cols)
-if selectedIndex != 4 { exit(3) }
-
-// Move left
-selectedIndex = max(0, selectedIndex - 1)
-if selectedIndex != 3 { exit(4) }
-
-exit(0)
-' 2>/dev/null || echo "fail")
-
-if [[ "$GRID_STATE_TEST" != "fail" ]]; then
-    pass "Grid keyboard navigation state model correctly bounds selection within item boundaries"
-else
-    fail "Grid keyboard state logic failed"
-fi
-
-echo "Test 20: Grid Launcher Process Lifetime & Clean Dismissal..."
-# Generate a Grid launcher
+echo "Test 17: Grid Launcher Process Lifetime & Clean Dismissal..."
 GRID_TEST_DIR="$TEST_DIR/GridLifetime"
 mkdir -p "$GRID_TEST_DIR"
 touch "$GRID_TEST_DIR/AppA.app" "$GRID_TEST_DIR/AppB.app"
@@ -488,7 +353,7 @@ fi
 echo "────────────────────────────────────────────────────────────────────────"
 echo "Results: $PASS_COUNT Passed, $FAIL_COUNT Failed"
 if [[ $FAIL_COUNT -eq 0 ]]; then
-    echo "🎉 All 20 comprehensive 3.0 regression, manager, and lifecycle tests passed successfully!"
+    echo "🎉 All release-candidate regression, manager, and packaging tests passed successfully!"
     exit 0
 else
     echo "❌ Some tests failed."

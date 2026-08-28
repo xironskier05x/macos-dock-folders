@@ -22,6 +22,7 @@ struct RepairedState: Codable {
 }
 
 struct RawItem {
+    let itemID: String // Stable ID (url.lastPathComponent) e.g. "ChatGPT.app"
     let url: URL
     let resolvedURL: URL
     let displayName: String
@@ -311,6 +312,7 @@ class RuntimeAppDelegate: NSObject, NSApplicationDelegate {
             }
 
             items.append(RawItem(
+                itemID: url.lastPathComponent,
                 url: url,
                 resolvedURL: resolved,
                 displayName: displayName,
@@ -330,8 +332,8 @@ class RuntimeAppDelegate: NSObject, NSApplicationDelegate {
             if let order = customOrder, !order.isEmpty {
                 let orderDict = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
                 return items.sorted {
-                    let idx1 = orderDict[$0.displayName] ?? 9999
-                    let idx2 = orderDict[$1.displayName] ?? 9999
+                    let idx1 = orderDict[$0.itemID] ?? orderDict[$0.displayName] ?? 99999
+                    let idx2 = orderDict[$1.itemID] ?? orderDict[$1.displayName] ?? 99999
                     if idx1 != idx2 { return idx1 < idx2 }
                     return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
                 }
@@ -474,8 +476,24 @@ class RuntimeAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let rawItems = fetchRawItems(in: targetURL, sortMode: cfg.sortMode ?? "name", customOrder: cfg.customOrder)
-        let launcherItems: [LauncherItem] = rawItems.map { raw in
-            let icon = NSWorkspace.shared.icon(forFile: raw.resolvedURL.path)
+        let synchronousIconLimit = 60
+        let launcherItems: [LauncherItem] = rawItems.enumerated().map { (idx, raw) in
+            let icon: NSImage
+            if idx < synchronousIconLimit {
+                icon = NSWorkspace.shared.icon(forFile: raw.resolvedURL.path)
+            } else {
+                let contentType: UTType
+                if raw.isApp {
+                    contentType = .application
+                } else if raw.isDirectory && !raw.isPackage {
+                    contentType = .folder
+                } else if let ut = UTType(filenameExtension: raw.url.pathExtension) {
+                    contentType = ut
+                } else {
+                    contentType = .item
+                }
+                icon = NSWorkspace.shared.icon(for: contentType)
+            }
             icon.size = NSSize(width: 48, height: 48)
             return LauncherItem(
                 id: raw.url.lastPathComponent,

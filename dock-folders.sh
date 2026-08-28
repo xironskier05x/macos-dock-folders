@@ -580,3 +580,7 @@ if ! $ADD_TO_DOCK && [[ $BUILD_SUCCESS_COUNT -gt 0 ]]; then
     echo "💡 Drag the generated .app files into your macOS Dock."
 fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+if [[ $BUILD_SUCCESS_COUNT -eq 0 && ${#FOLDERS[@]} -gt 0 ]]; then
+    exit 1
+fi

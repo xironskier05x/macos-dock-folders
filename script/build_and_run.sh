@@ -47,6 +47,7 @@ RUNTIME_SOURCES=(
     "$SCRIPT_DIR/DockFolders/Runtime/GridLauncherView.swift"
     "$SCRIPT_DIR/DockFolders/Runtime/GridLauncherWindow.swift"
     "$SCRIPT_DIR/DockFolders/Models/LauncherItem.swift"
+    "$SCRIPT_DIR/DockFolders/Models/GridNavigationState.swift"
 )
 
 swiftc -target arm64-apple-macos13.0 -O -o "$BUILD_DIR/DockFolderRuntime_arm64" "${RUNTIME_SOURCES[@]}"
@@ -66,6 +67,7 @@ SWIFT_SOURCES=(
     "$SCRIPT_DIR/DockFolders/Models/SortMode.swift"
     "$SCRIPT_DIR/DockFolders/Models/IconConfiguration.swift"
     "$SCRIPT_DIR/DockFolders/Models/LauncherItem.swift"
+    "$SCRIPT_DIR/DockFolders/Models/GridNavigationState.swift"
     "$SCRIPT_DIR/DockFolders/Models/DockTileConfig.swift"
     "$SCRIPT_DIR/DockFolders/Models/DockTile.swift"
     "$SCRIPT_DIR/DockFolders/Services/BookmarkService.swift"

@@ -184,19 +184,15 @@ public struct GridLauncherView: View {
     }
 
     private func moveSelection(by delta: Int) {
-        let count = filteredItems.count
-        guard count > 0 else { return }
-        var newIdx = selectedIndex + delta
-        if newIdx < 0 { newIdx = 0 }
-        if newIdx >= count { newIdx = count - 1 }
-        selectedIndex = newIdx
+        var state = GridNavigationState(selectedIndex: selectedIndex, columnsCount: columnsCount, totalItems: filteredItems.count)
+        state.move(by: delta)
+        selectedIndex = state.selectedIndex
     }
 
     private func launchCurrentSelection() {
-        let count = filteredItems.count
-        guard count > 0 else { return }
-        let validIdx = max(0, min(selectedIndex, count - 1))
-        onLaunch(filteredItems[validIdx])
+        let state = GridNavigationState(selectedIndex: selectedIndex, columnsCount: columnsCount, totalItems: filteredItems.count)
+        guard state.totalItems > 0 else { return }
+        onLaunch(filteredItems[state.selectedIndex])
     }
 }
 

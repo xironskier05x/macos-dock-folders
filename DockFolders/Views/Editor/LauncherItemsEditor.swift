@@ -3,10 +3,23 @@ import UniformTypeIdentifiers
 
 public struct LauncherItemsEditor: View {
     let tileID: String
+    var isReadOnly: Bool = false
     @Binding var items: [LauncherItem]
     @Binding var customOrder: [String]?
     @State private var selectedItemIds = Set<String>()
     @State private var isDropTargeted: Bool = false
+
+    public init(
+        tileID: String,
+        isReadOnly: Bool = false,
+        items: Binding<[LauncherItem]>,
+        customOrder: Binding<[String]?>
+    ) {
+        self.tileID = tileID
+        self.isReadOnly = isReadOnly
+        self._items = items
+        self._customOrder = customOrder
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -15,10 +28,25 @@ public struct LauncherItemsEditor: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                 Spacer()
-                Button(action: addItemsViaPanel) {
-                    Label("Add Items…", systemImage: "plus")
+                if !isReadOnly {
+                    Button(action: addItemsViaPanel) {
+                        Label("Add Items…", systemImage: "plus")
+                    }
+                    .controlSize(.small)
                 }
-                .controlSize(.small)
+            }
+
+            if isReadOnly {
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .foregroundColor(.orange)
+                    Text("Legacy Unmanaged Launcher — Items are read-only from source folder. Convert to a Managed Collection to add or edit items.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(6)
             }
 
             if items.isEmpty {
@@ -26,12 +54,14 @@ public struct LauncherItemsEditor: View {
                     Image(systemName: "arrow.down.doc")
                         .font(.system(size: 28))
                         .foregroundColor(.secondary)
-                    Text("Drag applications, documents, or folders here")
+                    Text(isReadOnly ? "No items found in source folder" : "Drag applications, documents, or folders here")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
-                    Text("Original files are not moved or copied")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    if !isReadOnly {
+                        Text("Original files are not moved or copied")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity, minHeight: 140)
                 .background(
@@ -58,11 +88,13 @@ public struct LauncherItemsEditor: View {
 
                             Spacer()
 
-                            Button(action: { removeItem(item) }) {
-                                Image(systemName: "trash")
-                                    .foregroundColor(.secondary)
+                            if !isReadOnly {
+                                Button(action: { removeItem(item) }) {
+                                    Image(systemName: "trash")
+                                        .foregroundColor(.secondary)
+                                }
+                                .buttonStyle(.borderless)
                             }
-                            .buttonStyle(.borderless)
                         }
                         .padding(.vertical, 2)
                         .contextMenu {
@@ -72,19 +104,23 @@ public struct LauncherItemsEditor: View {
                             Button("Reveal Original in Finder") {
                                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.resolvedPath)])
                             }
-                            Divider()
-                            Button("Remove from Launcher", role: .destructive) {
-                                removeItem(item)
+                            if !isReadOnly {
+                                Divider()
+                                Button("Remove from Launcher", role: .destructive) {
+                                    removeItem(item)
+                                }
                             }
                         }
                     }
-                    .onMove(perform: moveItems)
+                    .onMove(perform: isReadOnly ? nil : moveItems)
                 }
                 .frame(minHeight: 160, maxHeight: 220)
                 .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
                 .cornerRadius(8)
                 .onDeleteCommand {
-                    deleteSelected()
+                    if !isReadOnly {
+                        deleteSelected()
+                    }
                 }
             }
         }
@@ -92,11 +128,13 @@ public struct LauncherItemsEditor: View {
         .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
         .cornerRadius(10)
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-            handleDrop(providers)
+            if isReadOnly { return false }
+            return handleDrop(providers)
         }
     }
 
     private func addItemsViaPanel() {
+        guard !isReadOnly else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
@@ -111,6 +149,7 @@ public struct LauncherItemsEditor: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !isReadOnly else { return false }
         var didAdd = false
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -127,11 +166,13 @@ public struct LauncherItemsEditor: View {
     }
 
     private func removeItem(_ item: LauncherItem) {
+        guard !isReadOnly else { return }
         _ = LauncherCollectionService.removeItem(at: URL(fileURLWithPath: item.path))
         refreshItems()
     }
 
     private func deleteSelected() {
+        guard !isReadOnly else { return }
         for id in selectedItemIds {
             if let item = items.first(where: { $0.id == id }) {
                 _ = LauncherCollectionService.removeItem(at: URL(fileURLWithPath: item.path))
@@ -142,11 +183,13 @@ public struct LauncherItemsEditor: View {
     }
 
     private func moveItems(from source: IndexSet, to destination: Int) {
+        guard !isReadOnly else { return }
         items.move(fromOffsets: source, toOffset: destination)
         customOrder = items.map { $0.id }
     }
 
     private func refreshItems() {
+        guard !isReadOnly else { return }
         if let colURL = LauncherCollectionService.collectionURL(for: tileID, createIfMissing: false) {
             items = LauncherCollectionService.fetchItems(for: colURL, customOrder: customOrder)
             customOrder = items.map { $0.id }
