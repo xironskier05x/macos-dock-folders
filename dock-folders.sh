@@ -2,8 +2,8 @@
 # dock-folders 2.1 — Bulletproof Native macOS Dock Folder Generator
 #
 # Generates ultra-fast, native .app wrappers for folders with lazy-loaded popup
-# menus, persistent bookmark self-healing, package detection, alias resolution,
-# safe overwrite protection, and collision-free bundle identifiers.
+# menus, two-phase icon loading, persistent bookmark self-healing, package detection,
+# alias resolution, safe overwrite protection, and collision-free bundle identifiers.
 
 set -euo pipefail
 
@@ -321,19 +321,27 @@ SWIFT
     return $res
 }
 
-# ─── Dock Pinning Helper (Idempotent) ─────────────────────────────────────────
+# ─── Dock Pinning Helper (Idempotent & Truthful) ─────────────────────────────
 pin_to_dock() {
     local app_bundle="$1"
     if command -v dockutil &>/dev/null; then
         if ! dockutil --find "$app_bundle" &>/dev/null; then
-            dockutil --add "$app_bundle" --no-restart >/dev/null 2>&1 || true
-            DOCK_RESTART_NEEDED=true
+            if dockutil --add "$app_bundle" --no-restart >/dev/null 2>&1; then
+                DOCK_RESTART_NEEDED=true
+            else
+                echo "  ⚠ Launcher created successfully, but automatic Dock pinning failed."
+            fi
         fi
     else
         if ! defaults read com.apple.dock persistent-apps 2>/dev/null | grep -Fq "$app_bundle"; then
-            local tile_data="<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$app_bundle</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
-            defaults write com.apple.dock persistent-apps -array-add "$tile_data"
-            DOCK_RESTART_NEEDED=true
+            local escaped_bundle
+            escaped_bundle=$(escape_xml "$app_bundle")
+            local tile_data="<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$escaped_bundle</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
+            if defaults write com.apple.dock persistent-apps -array-add "$tile_data" 2>/dev/null; then
+                DOCK_RESTART_NEEDED=true
+            else
+                echo "  ⚠ Launcher created successfully, but automatic Dock pinning failed."
+            fi
         fi
     fi
 }
@@ -404,7 +412,7 @@ for folder_arg in "${FOLDERS[@]}"; do
         fi
     fi
 
-    # Atomic Staging Directory inside $OUTPUT_DIR (guarantees same filesystem for atomic rename)
+    # Transactional Staging Directory inside $OUTPUT_DIR (guarantees same volume for rename)
     staging_base="$OUTPUT_DIR/.staging_$$"
     staging_app="$staging_base/$app_name"
     mkdir -p "$staging_app/Contents/MacOS" "$staging_app/Contents/Resources"
@@ -522,7 +530,7 @@ PLIST
         continue
     fi
 
-    # 8. True Atomic Install with Backup & Rollback
+    # 8. Transactional Install with Backup & Rollback
     backup_path="$OUTPUT_DIR/.backup_${app_name}_$$"
     if [[ -d "$app_path" ]]; then
         mv "$app_path" "$backup_path"

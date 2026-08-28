@@ -11,7 +11,12 @@ struct TileConfig: Codable {
     var tileMode: String       // "folder" or "launcher"
 }
 
-struct ItemMetadata {
+struct RepairedState: Codable {
+    var targetPath: String
+    var targetBookmarkBase64: String?
+}
+
+struct RawItem {
     let url: URL
     let resolvedURL: URL
     let displayName: String
@@ -19,6 +24,10 @@ struct ItemMetadata {
     let isPackage: Bool
     let isApp: Bool
     let modDate: Date
+}
+
+struct ItemMetadata {
+    let raw: RawItem
     let icon: NSImage
 }
 
@@ -55,7 +64,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let maxTopLevelItems = 100
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if !loadConfig() {
+        if !loadConfig() || resolvedTargetURL == nil {
             failDamagedConfig()
             return
         }
@@ -66,72 +75,75 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    var appSupportConfigURL: URL? {
+    var appSupportStateURL: URL? {
         guard let bundleID = Bundle.main.bundleIdentifier else { return nil }
         let fm = FileManager.default
         guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
         let dir = appSupport.appendingPathComponent("macOS Dock Folders").appendingPathComponent(bundleID)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
-        return dir.appendingPathComponent("config.json")
+        return dir.appendingPathComponent("repaired_state.json")
     }
 
     func loadConfig() -> Bool {
-        // 1. Check mutable state in Application Support (self-healed / updated bookmarks)
-        if let userConfigURL = appSupportConfigURL,
-           let data = try? Data(contentsOf: userConfigURL),
-           let decoded = try? JSONDecoder().decode(TileConfig.self, from: data) {
-            self.config = decoded
-            self.resolvedTargetURL = resolveTarget(from: decoded)
-            return true
-        }
-
-        // 2. Check bundle config.json
+        // 1. Bundle config is authoritative for settings (displayName, sortMode, maxDepth, tileMode)
         guard let bundleConfigURL = Bundle.main.url(forResource: "config", withExtension: "json"),
               let data = try? Data(contentsOf: bundleConfigURL),
-              let decoded = try? JSONDecoder().decode(TileConfig.self, from: data) else {
-            return false // Fail closed! Do not default to NSHomeDirectory()
+              var bundleConfig = try? JSONDecoder().decode(TileConfig.self, from: data) else {
+            return false // Fail closed!
         }
 
-        self.config = decoded
-        self.resolvedTargetURL = resolveTarget(from: decoded)
+        // 2. Overlay mutable target path & bookmark from Application Support if previously repaired
+        if let stateURL = appSupportStateURL,
+           let stateData = try? Data(contentsOf: stateURL),
+           let state = try? JSONDecoder().decode(RepairedState.self, from: stateData) {
+            bundleConfig.targetPath = state.targetPath
+            bundleConfig.targetBookmarkBase64 = state.targetBookmarkBase64
+        }
+
+        self.config = bundleConfig
+        self.resolvedTargetURL = resolveTarget(from: bundleConfig)
         return true
     }
 
-    func persistRepairedConfig(targetURL: URL) {
+    func persistRepairedState(targetURL: URL) {
         guard var currentConfig = self.config else { return }
         currentConfig.targetPath = targetURL.path
+        var b64: String? = nil
         if let bookmarkData = try? targetURL.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil) {
-            currentConfig.targetBookmarkBase64 = bookmarkData.base64EncodedString()
+            b64 = bookmarkData.base64EncodedString()
+            currentConfig.targetBookmarkBase64 = b64
         }
         self.config = currentConfig
 
-        if let userConfigURL = appSupportConfigURL,
-           let encoded = try? JSONEncoder().encode(currentConfig) {
-            try? encoded.write(to: userConfigURL)
+        if let stateURL = appSupportStateURL {
+            let state = RepairedState(targetPath: targetURL.path, targetBookmarkBase64: b64)
+            if let encoded = try? JSONEncoder().encode(state) {
+                try? encoded.write(to: stateURL)
+            }
         }
     }
 
     func failDamagedConfig() {
-        fputs("Error: Dock Folder configuration is damaged or missing.\n", stderr)
+        fputs("Error: Dock Folder configuration is damaged or target folder is unavailable.\n", stderr)
         if CommandLine.arguments.contains("--test") || ProcessInfo.processInfo.environment["CI"] != nil {
             exit(1)
         }
         let alert = NSAlert()
-        alert.messageText = "Dock Folder Configuration Damaged"
-        alert.informativeText = "The configuration for this Dock launcher is missing or corrupted.\nPlease re-run dock-folders.sh to regenerate it."
+        alert.messageText = "Dock Folder Target Unavailable"
+        alert.informativeText = "The target folder for this Dock launcher could not be found or its configuration is damaged.\nPlease re-run dock-folders.sh to regenerate it."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "OK")
         alert.runModal()
         exit(1)
     }
 
-    func resolveTarget(from cfg: TileConfig) -> URL {
+    func resolveTarget(from cfg: TileConfig) -> URL? {
         if let b64 = cfg.targetBookmarkBase64, let bookmarkData = Data(base64Encoded: b64) {
             var isStale = false
             if let resolved = try? URL(resolvingBookmarkData: bookmarkData, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &isStale),
                FileManager.default.fileExists(atPath: resolved.path) {
                 if isStale {
-                    persistRepairedConfig(targetURL: resolved)
+                    persistRepairedState(targetURL: resolved)
                 }
                 return resolved
             }
@@ -143,10 +155,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return promptRelocate(fallback)
     }
 
-    func promptRelocate(_ fallback: URL) -> URL {
-        guard let cfg = self.config else { return fallback }
+    func promptRelocate(_ fallback: URL) -> URL? {
+        guard let cfg = self.config else { return nil }
         if CommandLine.arguments.contains("--test") || ProcessInfo.processInfo.environment["CI"] != nil {
-            return fallback
+            return nil
         }
         let alert = NSAlert()
         alert.messageText = "Folder Couldn't Be Found"
@@ -162,11 +174,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             panel.allowsMultipleSelection = false
             panel.prompt = "Select Folder"
             if panel.runModal() == .OK, let selected = panel.url {
-                persistRepairedConfig(targetURL: selected)
+                persistRepairedState(targetURL: selected)
                 return selected
             }
         }
-        return fallback
+        return nil // Return nil on cancel to prevent zombie launcher
     }
 
     func application(_ app: NSApplication, openFiles filenames: [String]) {
@@ -193,7 +205,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
 
-            if cfg.tileMode == "launcher" && sourceURL.pathExtension.lowercased() == "app" {
+            if cfg.tileMode == "launcher" {
+                // In Launcher Mode, link EVERYTHING (apps, files, folders) as a virtual drawer
                 let linkURL = targetURL.appendingPathComponent(sourceURL.lastPathComponent)
                 do {
                     if !fm.fileExists(atPath: linkURL.path) {
@@ -204,6 +217,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     failureCount += 1
                 }
             } else {
+                // In Folder Mode, copy files into directory
                 let destURL = targetURL.appendingPathComponent(sourceURL.lastPathComponent)
                 do {
                     var finalDestURL = destURL
@@ -261,14 +275,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return NSPoint(x: popupX, y: popupY)
     }
 
-    func fetchItems(in folderURL: URL) -> [ItemMetadata] {
+    // Phase A: Fast metadata extraction without calling NSWorkspace.icon(forFile:)
+    func fetchRawItems(in folderURL: URL) -> [RawItem] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .isApplicationKey, .isAliasFileKey, .contentModificationDateKey]
         guard let contents = try? fm.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else {
             return []
         }
 
-        var items: [ItemMetadata] = []
+        var items: [RawItem] = []
         for url in contents {
             var resolved = url
             let values = try? url.resourceValues(forKeys: Set(keys))
@@ -289,26 +304,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 displayName = url.lastPathComponent
             }
 
-            let icon = NSWorkspace.shared.icon(forFile: resolved.path)
-            icon.size = NSSize(width: 18, height: 18)
-
-            items.append(ItemMetadata(
+            items.append(RawItem(
                 url: url,
                 resolvedURL: resolved,
                 displayName: displayName,
                 isDirectory: isDir,
                 isPackage: isPkg,
                 isApp: isApp,
-                modDate: modDate,
-                icon: icon
+                modDate: modDate
             ))
         }
 
         guard let sortMode = self.config?.sortMode else { return items }
-        return sortMetadata(items, mode: sortMode)
+        return sortRawItems(items, mode: sortMode)
     }
 
-    func sortMetadata(_ items: [ItemMetadata], mode: String) -> [ItemMetadata] {
+    func sortRawItems(_ items: [RawItem], mode: String) -> [RawItem] {
         switch mode.lowercased() {
         case "recent", "date", "modified":
             return items.sorted { $0.modDate > $1.modDate }
@@ -326,29 +337,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // Phase B: Retrieve icons ONLY for the slice of items actually being displayed
     func populateMenu(_ menu: NSMenu, for folderURL: URL, depth: Int, maxDepth: Int, sortMode: String) {
-        let allItems = fetchItems(in: folderURL)
-        let totalCount = allItems.count
-        let items = (depth == 0 && totalCount > maxTopLevelItems) ? Array(allItems.prefix(maxTopLevelItems)) : allItems
+        let allRawItems = fetchRawItems(in: folderURL)
+        let totalCount = allRawItems.count
+        let displayedRawItems = (depth == 0 && totalCount > maxTopLevelItems) ? Array(allRawItems.prefix(maxTopLevelItems)) : allRawItems
+
         var keyIndex = 1
 
-        for item in items {
+        for raw in displayedRawItems {
+            // Lazy icon lookup only for displayed items!
+            let icon = NSWorkspace.shared.icon(forFile: raw.resolvedURL.path)
+            icon.size = NSSize(width: 18, height: 18)
+
             let keyEq = (depth == 0 && keyIndex <= 9) ? "\(keyIndex)" : ""
-            let menuItem = NSMenuItem(title: item.displayName, action: #selector(itemClicked(_:)), keyEquivalent: keyEq)
+            let menuItem = NSMenuItem(title: raw.displayName, action: #selector(itemClicked(_:)), keyEquivalent: keyEq)
             if depth == 0 && keyIndex <= 9 {
                 menuItem.keyEquivalentModifierMask = [.command]
                 keyIndex += 1
             }
             menuItem.target = self
-            menuItem.image = item.icon
-            menuItem.representedObject = item.resolvedURL.path
+            menuItem.image = icon
+            menuItem.representedObject = raw.resolvedURL.path
 
-            if item.isDirectory && !item.isPackage && !item.isApp && depth < maxDepth {
-                let submenu = NSMenu(title: item.displayName)
+            if raw.isDirectory && !raw.isPackage && !raw.isApp && depth < maxDepth {
+                let submenu = NSMenu(title: raw.displayName)
                 submenu.minimumWidth = 220
                 submenu.autoenablesItems = false
 
-                let loader = SubmenuLoader(folderURL: item.resolvedURL, depth: depth + 1, maxDepth: maxDepth, sortMode: sortMode, actionTarget: self)
+                let loader = SubmenuLoader(folderURL: raw.resolvedURL, depth: depth + 1, maxDepth: maxDepth, sortMode: sortMode, actionTarget: self)
                 submenu.delegate = loader
                 submenuHolders.append(loader)
 
@@ -362,13 +379,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             menu.addItem(menuItem)
 
-            if !item.isDirectory || item.isPackage || item.isApp || depth >= maxDepth {
-                let altItem = NSMenuItem(title: "Reveal in Finder: \(item.displayName)", action: #selector(revealInFinder(_:)), keyEquivalent: keyEq)
+            if !raw.isDirectory || raw.isPackage || raw.isApp || depth >= maxDepth {
+                let altItem = NSMenuItem(title: "Reveal in Finder: \(raw.displayName)", action: #selector(revealInFinder(_:)), keyEquivalent: keyEq)
                 altItem.keyEquivalentModifierMask = keyEq.isEmpty ? [.option] : [.option, .command]
                 altItem.isAlternate = true
-                altItem.image = item.icon
+                altItem.image = icon
                 altItem.target = self
-                altItem.representedObject = item.resolvedURL.path
+                altItem.representedObject = raw.resolvedURL.path
                 menu.addItem(altItem)
             }
         }
@@ -380,7 +397,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(moreItem)
         }
 
-        if allItems.isEmpty {
+        if allRawItems.isEmpty {
             let emptyItem = NSMenuItem(title: "(Folder is empty)", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
             menu.addItem(emptyItem)
@@ -406,7 +423,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         rootMenu.addItem(headerItem)
         rootMenu.addItem(NSMenuItem.separator())
 
-        // Top level items (instant)
+        // Top level items (instant, icons loaded only for displayed slice)
         populateMenu(rootMenu, for: targetURL, depth: 0, maxDepth: cfg.maxDepth, sortMode: cfg.sortMode)
 
         // Footer

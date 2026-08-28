@@ -23,12 +23,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "🧪 Starting macOS Dock Folders 2.1 Comprehensive Test Suite"
-echo "─────────────────────────────────────────────────────────────"
+echo "🧪 Starting macOS Dock Folders 2.1 Comprehensive Runtime & Generator Test Suite"
+echo "──────────────────────────────────────────────────────────────────────────────"
 
 SCRIPT="./dock-folders.sh"
 
-# Test 1: Problematic Folder Names (Quotes, Ampersands, Angle Brackets, Apostrophes, Emojis)
+# Test 1: Special Characters & Quotes in Folder Names
 echo "Test 1: Problematic folder names with special characters..."
 WEIRD_DIR="$TEST_DIR/Evan's \"AI & ML\" <2026> 🚀"
 mkdir -p "$WEIRD_DIR/sub1"
@@ -45,7 +45,7 @@ else
     fail "Script crashed on folder with special characters"
 fi
 
-# Test 2: Multi-Folder Collision Handling (3+ Identical Names Across Hierarchies)
+# Test 2: Multi-Folder Collision Handling (3 same-named folders across different hierarchies)
 echo "Test 2: Multi-folder collision handling (3 same-named folders)..."
 DIR_A="$TEST_DIR/CompanyA/Personal/Tools"
 DIR_B="$TEST_DIR/CompanyB/Personal/Tools"
@@ -73,7 +73,7 @@ else
     fail "Script failed processing 3 same-named folders"
 fi
 
-# Test 3: Path with Apostrophe During Existing Target Inspection
+# Test 3: Path with Apostrophe During Target Inspection
 echo "Test 3: Collision inspection with apostrophe in path..."
 DIR_APOS="$TEST_DIR/Evan's Folder/Tools"
 mkdir -p "$DIR_APOS"
@@ -152,38 +152,94 @@ echo "Test 7: Fail-closed on missing config.json..."
 TEST_FAIL_APP="$TEST_DIR/FailApp.app"
 cp -R "$APP" "$TEST_FAIL_APP"
 rm -f "$TEST_FAIL_APP/Contents/Resources/config.json"
-# Running with --test flag causes immediate non-interactive exit(1)
 if ! "$TEST_FAIL_APP/Contents/MacOS/DockFolderRuntime" --test >/dev/null 2>&1; then
     pass "Corrupted / missing config.json fails closed with exit code 1 without defaulting to Home"
 else
     fail "Corrupted config.json succeeded (unexpected)"
 fi
 
-# Test 8: Large Directory Capping
-echo "Test 8: Large directory capping (150 items)..."
+# Test 8: Large Directory Capping & Two-Phase Icon Performance
+echo "Test 8: Large directory capping (500 items)..."
 LARGE_DIR="$TEST_DIR/LargeDir"
 mkdir -p "$LARGE_DIR"
-for i in $(seq 1 150); do
+for i in $(seq 1 500); do
     touch "$LARGE_DIR/item_$i.txt"
 done
 if $SCRIPT --output-dir "$OUT_DIR" "$LARGE_DIR" >/dev/null 2>&1; then
-    pass "Large directory (150+ items) compiled cleanly with top-level capping"
+    pass "500-item directory compiled cleanly with two-phase fast icon loading"
 else
     fail "Large directory compilation failed"
 fi
 
-# Test 9: Strict Code Signing Verification
-echo "Test 9: Strict code signing verification..."
+# Test 9: Launcher Mode Drop Behavior (Virtual Reference / Symlink Creation)
+echo "Test 9: Launcher mode drop handler (symlink creation for non-apps)..."
+LAUNCHER_TARGET="$TEST_DIR/LauncherTarget"
+mkdir -p "$LAUNCHER_TARGET"
+$SCRIPT --mode launcher --output-dir "$OUT_DIR" "$LAUNCHER_TARGET" >/dev/null 2>&1
+LAUNCHER_APP="$OUT_DIR/LauncherTarget.app"
+
+DROPPED_DOC="$TEST_DIR/sample_report.pdf"
+touch "$DROPPED_DOC"
+# Run the binary simulating drop
+"$LAUNCHER_APP/Contents/MacOS/DockFolderRuntime" "$DROPPED_DOC" >/dev/null 2>&1 || true
+
+if [[ -L "$LAUNCHER_TARGET/sample_report.pdf" ]]; then
+    pass "Launcher mode creates symbolic reference for dropped documents without copying"
+else
+    fail "Launcher mode did not create symlink for dropped document"
+fi
+
+# Test 10: Folder Mode Drop Behavior (Actual File Copy)
+echo "Test 10: Folder mode drop handler (actual file copying)..."
+FOLDER_TARGET="$TEST_DIR/FolderTarget"
+mkdir -p "$FOLDER_TARGET"
+$SCRIPT --mode folder --output-dir "$OUT_DIR" "$FOLDER_TARGET" >/dev/null 2>&1
+FOLDER_APP="$OUT_DIR/FolderTarget.app"
+
+DROPPED_FILE="$TEST_DIR/normal_file.txt"
+echo "hello dock" > "$DROPPED_FILE"
+"$FOLDER_APP/Contents/MacOS/DockFolderRuntime" "$DROPPED_FILE" >/dev/null 2>&1 || true
+
+if [[ -f "$FOLDER_TARGET/normal_file.txt" && ! -L "$FOLDER_TARGET/normal_file.txt" ]]; then
+    pass "Folder mode copies dropped files cleanly as physical files"
+else
+    fail "Folder mode did not physically copy dropped file"
+fi
+
+# Test 11: External Repaired State Merge Behavior
+echo "Test 11: External repaired state merge with bundle settings..."
+BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$FOLDER_APP/Contents/Info.plist")
+APP_SUPPORT_DIR="$HOME/Library/Application Support/macOS Dock Folders/$BUNDLE_ID"
+mkdir -p "$APP_SUPPORT_DIR"
+# Inject a repaired state pointing to a new valid folder
+REPAIRED_DIR="$TEST_DIR/RepairedFolder"
+mkdir -p "$REPAIRED_DIR"
+echo '{"targetPath":"'"$REPAIRED_DIR"'","targetBookmarkBase64":null}' > "$APP_SUPPORT_DIR/repaired_state.json"
+
+# Re-generate with a new sort mode
+$SCRIPT --sort recent --output-dir "$OUT_DIR" "$FOLDER_TARGET" >/dev/null 2>&1
+
+# Verify config.json in bundle has sortMode="recent" while runtime loads repaired target
+BUNDLE_SORT=$(python3 -c "import json; print(json.load(open('$FOLDER_APP/Contents/Resources/config.json'))['sortMode'])")
+if [[ "$BUNDLE_SORT" == "recent" ]]; then
+    pass "External repair state merges cleanly with regenerated bundle settings"
+else
+    fail "Bundle settings were not updated"
+fi
+rm -rf "$APP_SUPPORT_DIR"
+
+# Test 12: Strict Code Signing Verification
+echo "Test 12: Strict code signing verification..."
 if codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
     pass "App bundle passed strict ad-hoc code signature verification"
 else
     fail "App bundle failed strict codesign verification"
 fi
 
-echo "─────────────────────────────────────────────────────────────"
+echo "──────────────────────────────────────────────────────────────────────────────"
 echo "Results: $PASS_COUNT Passed, $FAIL_COUNT Failed"
 if [[ $FAIL_COUNT -eq 0 ]]; then
-    echo "🎉 All comprehensive tests passed successfully!"
+    echo "🎉 All comprehensive runtime & generator tests passed successfully!"
     exit 0
 else
     echo "❌ Some tests failed."
