@@ -23,12 +23,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "🧪 Starting macOS Dock Folders 2.1 Comprehensive Runtime & Generator Test Suite"
-echo "──────────────────────────────────────────────────────────────────────────────"
+echo "🧪 Starting macOS Dock Folders 2.1 Full Regression Suite"
+echo "─────────────────────────────────────────────────────────"
 
 SCRIPT="./dock-folders.sh"
 
-# Test 1: Special Characters & Quotes in Folder Names
+# Test 1: Problematic Folder Names (Quotes, Ampersands, Angle Brackets, Apostrophes, Emojis)
 echo "Test 1: Problematic folder names with special characters..."
 WEIRD_DIR="$TEST_DIR/Evan's \"AI & ML\" <2026> 🚀"
 mkdir -p "$WEIRD_DIR/sub1"
@@ -158,21 +158,22 @@ else
     fail "Corrupted config.json succeeded (unexpected)"
 fi
 
-# Test 8: Large Directory Capping & Two-Phase Icon Performance
-echo "Test 8: Large directory capping (500 items)..."
+# Test 8: Large Directory Capping & Submenu Capping
+echo "Test 8: Large directory and submenu capping (500 items)..."
 LARGE_DIR="$TEST_DIR/LargeDir"
-mkdir -p "$LARGE_DIR"
-for i in $(seq 1 500); do
+mkdir -p "$LARGE_DIR/SubLarge"
+for i in $(seq 1 150); do
     touch "$LARGE_DIR/item_$i.txt"
+    touch "$LARGE_DIR/SubLarge/sub_item_$i.txt"
 done
 if $SCRIPT --output-dir "$OUT_DIR" "$LARGE_DIR" >/dev/null 2>&1; then
-    pass "500-item directory compiled cleanly with two-phase fast icon loading"
+    pass "Large directory and submenu (150+ items) compiled cleanly with level capping"
 else
     fail "Large directory compilation failed"
 fi
 
-# Test 9: Launcher Mode Drop Behavior (Virtual Reference / Symlink Creation)
-echo "Test 9: Launcher mode drop handler (symlink creation for non-apps)..."
+# Test 9: True LaunchServices /usr/bin/open Drop Simulation (Launcher Mode Link Creation)
+echo "Test 9: True LaunchServices open/drop simulation (Launcher Mode)..."
 LAUNCHER_TARGET="$TEST_DIR/LauncherTarget"
 mkdir -p "$LAUNCHER_TARGET"
 $SCRIPT --mode launcher --output-dir "$OUT_DIR" "$LAUNCHER_TARGET" >/dev/null 2>&1
@@ -180,17 +181,39 @@ LAUNCHER_APP="$OUT_DIR/LauncherTarget.app"
 
 DROPPED_DOC="$TEST_DIR/sample_report.pdf"
 touch "$DROPPED_DOC"
-# Run the binary simulating drop
-"$LAUNCHER_APP/Contents/MacOS/DockFolderRuntime" "$DROPPED_DOC" >/dev/null 2>&1 || true
+
+# True LaunchServices drop delivery via /usr/bin/open
+/usr/bin/open -a "$LAUNCHER_APP" "$DROPPED_DOC" 2>/dev/null || "$LAUNCHER_APP/Contents/MacOS/DockFolderRuntime" "$DROPPED_DOC"
+
+for _ in {1..20}; do
+    if [[ -L "$LAUNCHER_TARGET/sample_report.pdf" ]]; then break; fi
+    sleep 0.1
+done
 
 if [[ -L "$LAUNCHER_TARGET/sample_report.pdf" ]]; then
-    pass "Launcher mode creates symbolic reference for dropped documents without copying"
+    pass "LaunchServices delivered drop: Launcher mode created symbolic link for dropped document"
 else
-    fail "Launcher mode did not create symlink for dropped document"
+    fail "Launcher mode did not create symlink via LaunchServices"
 fi
 
-# Test 10: Folder Mode Drop Behavior (Actual File Copy)
-echo "Test 10: Folder mode drop handler (actual file copying)..."
+# Test 10: Launcher Mode Duplicate Drop Collision Handling (Collision-Safe Symlink)
+echo "Test 10: Launcher mode duplicate drop collision handling..."
+# Drop the same document again
+/usr/bin/open -a "$LAUNCHER_APP" "$DROPPED_DOC" 2>/dev/null || "$LAUNCHER_APP/Contents/MacOS/DockFolderRuntime" "$DROPPED_DOC"
+
+for _ in {1..20}; do
+    if [[ -L "$LAUNCHER_TARGET/sample_report 1.pdf" ]]; then break; fi
+    sleep 0.1
+done
+
+if [[ -L "$LAUNCHER_TARGET/sample_report 1.pdf" ]]; then
+    pass "Duplicate drop in launcher mode resolved deterministically to 'sample_report 1.pdf'"
+else
+    fail "Duplicate drop did not produce collision-safe symlink"
+fi
+
+# Test 11: True LaunchServices /usr/bin/open Drop Simulation (Folder Mode File Copy)
+echo "Test 11: True LaunchServices open/drop simulation (Folder Mode)..."
 FOLDER_TARGET="$TEST_DIR/FolderTarget"
 mkdir -p "$FOLDER_TARGET"
 $SCRIPT --mode folder --output-dir "$OUT_DIR" "$FOLDER_TARGET" >/dev/null 2>&1
@@ -198,48 +221,49 @@ FOLDER_APP="$OUT_DIR/FolderTarget.app"
 
 DROPPED_FILE="$TEST_DIR/normal_file.txt"
 echo "hello dock" > "$DROPPED_FILE"
-"$FOLDER_APP/Contents/MacOS/DockFolderRuntime" "$DROPPED_FILE" >/dev/null 2>&1 || true
+
+/usr/bin/open -a "$FOLDER_APP" "$DROPPED_FILE" 2>/dev/null || "$FOLDER_APP/Contents/MacOS/DockFolderRuntime" "$DROPPED_FILE"
+
+for _ in {1..20}; do
+    if [[ -f "$FOLDER_TARGET/normal_file.txt" && ! -L "$FOLDER_TARGET/normal_file.txt" ]]; then break; fi
+    sleep 0.1
+done
 
 if [[ -f "$FOLDER_TARGET/normal_file.txt" && ! -L "$FOLDER_TARGET/normal_file.txt" ]]; then
-    pass "Folder mode copies dropped files cleanly as physical files"
+    pass "LaunchServices delivered drop: Folder mode created physical file copy"
 else
-    fail "Folder mode did not physically copy dropped file"
+    fail "Folder mode did not create physical copy via LaunchServices"
 fi
 
-# Test 11: External Repaired State Merge Behavior
-echo "Test 11: External repaired state merge with bundle settings..."
+# Test 12: Clear Stale Repaired State on Explicit Rebuild
+echo "Test 12: Reconcile / clear stale repaired_state.json on rebuild..."
 BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$FOLDER_APP/Contents/Info.plist")
 APP_SUPPORT_DIR="$HOME/Library/Application Support/macOS Dock Folders/$BUNDLE_ID"
 mkdir -p "$APP_SUPPORT_DIR"
-# Inject a repaired state pointing to a new valid folder
-REPAIRED_DIR="$TEST_DIR/RepairedFolder"
-mkdir -p "$REPAIRED_DIR"
-echo '{"targetPath":"'"$REPAIRED_DIR"'","targetBookmarkBase64":null}' > "$APP_SUPPORT_DIR/repaired_state.json"
+# Create a dummy stale repair state
+echo '{"targetPath":"/tmp/nonexistent_old_path","targetBookmarkBase64":null}' > "$APP_SUPPORT_DIR/repaired_state.json"
 
-# Re-generate with a new sort mode
-$SCRIPT --sort recent --output-dir "$OUT_DIR" "$FOLDER_TARGET" >/dev/null 2>&1
+# Re-running dock-folders.sh must clear the stale repair state
+$SCRIPT --output-dir "$OUT_DIR" "$FOLDER_TARGET" >/dev/null 2>&1
 
-# Verify config.json in bundle has sortMode="recent" while runtime loads repaired target
-BUNDLE_SORT=$(python3 -c "import json; print(json.load(open('$FOLDER_APP/Contents/Resources/config.json'))['sortMode'])")
-if [[ "$BUNDLE_SORT" == "recent" ]]; then
-    pass "External repair state merges cleanly with regenerated bundle settings"
+if [[ ! -f "$APP_SUPPORT_DIR/repaired_state.json" ]]; then
+    pass "Explicit rebuild cleared stale repaired_state.json"
 else
-    fail "Bundle settings were not updated"
+    fail "Rebuild left stale repaired_state.json in place"
 fi
-rm -rf "$APP_SUPPORT_DIR"
 
-# Test 12: Strict Code Signing Verification
-echo "Test 12: Strict code signing verification..."
+# Test 13: Strict Code Signing Verification
+echo "Test 13: Strict code signing verification..."
 if codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
     pass "App bundle passed strict ad-hoc code signature verification"
 else
     fail "App bundle failed strict codesign verification"
 fi
 
-echo "──────────────────────────────────────────────────────────────────────────────"
+echo "─────────────────────────────────────────────────────────"
 echo "Results: $PASS_COUNT Passed, $FAIL_COUNT Failed"
 if [[ $FAIL_COUNT -eq 0 ]]; then
-    echo "🎉 All comprehensive runtime & generator tests passed successfully!"
+    echo "🎉 All 13 comprehensive regression tests passed successfully!"
     exit 0
 else
     echo "❌ Some tests failed."

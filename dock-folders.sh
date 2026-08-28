@@ -412,6 +412,10 @@ for folder_arg in "${FOLDERS[@]}"; do
         fi
     fi
 
+    # Clear any stale external repaired state when explicitly rebuilding this target
+    app_support_dir="$HOME/Library/Application Support/macOS Dock Folders/$bundle_id"
+    rm -f "$app_support_dir/repaired_state.json" 2>/dev/null || true
+
     # Transactional Staging Directory inside $OUTPUT_DIR (guarantees same volume for rename)
     staging_base="$OUTPUT_DIR/.staging_$$"
     staging_app="$staging_base/$app_name"

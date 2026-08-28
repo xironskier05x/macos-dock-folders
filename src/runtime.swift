@@ -61,7 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var resolvedTargetURL: URL?
     var submenuHolders: [SubmenuLoader] = []
     var menuOpened = false
-    let maxTopLevelItems = 100
+    let maxItemsPerLevel = 100
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !loadConfig() || resolvedTargetURL == nil {
@@ -178,7 +178,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return selected
             }
         }
-        return nil // Return nil on cancel to prevent zombie launcher
+        return nil
     }
 
     func application(_ app: NSApplication, openFiles filenames: [String]) {
@@ -205,30 +205,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
 
+            let destURL = targetURL.appendingPathComponent(sourceURL.lastPathComponent)
+            var finalDestURL = destURL
+            var counter = 1
+            let baseName = destURL.deletingPathExtension().lastPathComponent
+            let ext = destURL.pathExtension
+            while fm.fileExists(atPath: finalDestURL.path) {
+                let newName = ext.isEmpty ? "\(baseName) \(counter)" : "\(baseName) \(counter).\(ext)"
+                finalDestURL = targetURL.appendingPathComponent(newName)
+                counter += 1
+            }
+
             if cfg.tileMode == "launcher" {
-                // In Launcher Mode, link EVERYTHING (apps, files, folders) as a virtual drawer
-                let linkURL = targetURL.appendingPathComponent(sourceURL.lastPathComponent)
+                // In Launcher Mode, link with collision-safe naming
                 do {
-                    if !fm.fileExists(atPath: linkURL.path) {
-                        try fm.createSymbolicLink(at: linkURL, withDestinationURL: sourceURL)
-                    }
+                    try fm.createSymbolicLink(at: finalDestURL, withDestinationURL: sourceURL)
                     successCount += 1
                 } catch {
                     failureCount += 1
                 }
             } else {
-                // In Folder Mode, copy files into directory
-                let destURL = targetURL.appendingPathComponent(sourceURL.lastPathComponent)
+                // In Folder Mode, copy files with collision-safe naming
                 do {
-                    var finalDestURL = destURL
-                    var counter = 1
-                    let baseName = destURL.deletingPathExtension().lastPathComponent
-                    let ext = destURL.pathExtension
-                    while fm.fileExists(atPath: finalDestURL.path) {
-                        let newName = ext.isEmpty ? "\(baseName) \(counter)" : "\(baseName) \(counter).\(ext)"
-                        finalDestURL = targetURL.appendingPathComponent(newName)
-                        counter += 1
-                    }
                     try fm.copyItem(at: sourceURL, to: finalDestURL)
                     successCount += 1
                 } catch {
@@ -337,16 +335,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Phase B: Retrieve icons ONLY for the slice of items actually being displayed
+    // Phase B: Retrieve icons ONLY for the slice of items actually being displayed at this level
     func populateMenu(_ menu: NSMenu, for folderURL: URL, depth: Int, maxDepth: Int, sortMode: String) {
         let allRawItems = fetchRawItems(in: folderURL)
         let totalCount = allRawItems.count
-        let displayedRawItems = (depth == 0 && totalCount > maxTopLevelItems) ? Array(allRawItems.prefix(maxTopLevelItems)) : allRawItems
+        let displayedRawItems = (totalCount > maxItemsPerLevel) ? Array(allRawItems.prefix(maxItemsPerLevel)) : allRawItems
 
         var keyIndex = 1
 
         for raw in displayedRawItems {
-            // Lazy icon lookup only for displayed items!
             let icon = NSWorkspace.shared.icon(forFile: raw.resolvedURL.path)
             icon.size = NSSize(width: 18, height: 18)
 
@@ -390,9 +387,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        if totalCount > maxTopLevelItems && depth == 0 {
+        // Submenu/level specific "Show All in Finder…"
+        if totalCount > maxItemsPerLevel {
             menu.addItem(NSMenuItem.separator())
-            let moreItem = NSMenuItem(title: "Show All in Finder… (\(totalCount) items)", action: #selector(openFolderInFinder), keyEquivalent: "")
+            let moreItem = NSMenuItem(title: "Show All in Finder… (\(totalCount) items)", action: #selector(openSpecificFolderInFinder(_:)), keyEquivalent: "")
+            moreItem.representedObject = folderURL.path
             moreItem.target = self
             menu.addItem(moreItem)
         }
@@ -423,7 +422,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         rootMenu.addItem(headerItem)
         rootMenu.addItem(NSMenuItem.separator())
 
-        // Top level items (instant, icons loaded only for displayed slice)
+        // Top level items
         populateMenu(rootMenu, for: targetURL, depth: 0, maxDepth: cfg.maxDepth, sortMode: cfg.sortMode)
 
         // Footer
@@ -467,6 +466,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openFolderInFinder() {
         guard let targetURL = self.resolvedTargetURL else { return }
         NSWorkspace.shared.open(targetURL)
+    }
+
+    @objc func openSpecificFolderInFinder(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     @objc func openFolderInTerminal() {
