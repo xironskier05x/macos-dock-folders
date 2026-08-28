@@ -23,7 +23,7 @@ public struct LauncherCollectionService {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("macOS Dock Folders").appendingPathComponent("Collections")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.standardizedFileURL
+        return dir.resolvingSymlinksInPath().standardizedFileURL
     }
 
     public static func validateCollectionID(_ collectionID: String) throws -> String {
@@ -41,17 +41,18 @@ public struct LauncherCollectionService {
     }
 
     public static func isManagedCollection(url: URL) -> Bool {
-        let canonicalBase = collectionsBaseURL.standardizedFileURL.path
-        let canonicalTarget = url.standardizedFileURL.path
-        return canonicalTarget.hasPrefix(canonicalBase.hasSuffix("/") ? canonicalBase : canonicalBase + "/")
+        let canonicalBase = collectionsBaseURL.resolvingSymlinksInPath().standardizedFileURL.path
+        let canonicalTarget = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let prefix = canonicalBase.hasSuffix("/") ? canonicalBase : canonicalBase + "/"
+        return canonicalTarget.hasPrefix(prefix)
     }
 
     public static func collectionURL(for collectionID: String, createIfMissing: Bool = false) -> URL? {
         guard let validID = try? validateCollectionID(collectionID) else { return nil }
-        let base = collectionsBaseURL.standardizedFileURL
-        let dir = base.appendingPathComponent(validID).standardizedFileURL
+        let base = collectionsBaseURL.resolvingSymlinksInPath().standardizedFileURL
+        let dir = base.appendingPathComponent(validID).resolvingSymlinksInPath().standardizedFileURL
 
-        guard dir.deletingLastPathComponent().standardizedFileURL == base else {
+        guard dir.deletingLastPathComponent().resolvingSymlinksInPath().path == base.path else {
             return nil
         }
 
