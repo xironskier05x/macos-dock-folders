@@ -1,0 +1,8 @@
+[environment]
+name = "macOS Dock Folders"
+version = "3.0.0"
+
+[actions]
+run = "script/build_and_run.sh"
+build = "script/build_and_run.sh --verify"
+test = "tests/run_tests.sh"

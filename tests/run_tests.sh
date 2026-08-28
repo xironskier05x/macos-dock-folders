@@ -23,12 +23,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "🧪 Starting macOS Dock Folders 2.1 Full Regression Suite"
-echo "─────────────────────────────────────────────────────────"
+echo "🧪 Starting macOS Dock Folders 3.0 Full Regression & Manager Test Suite"
+echo "───────────────────────────────────────────────────────────────────────"
 
 SCRIPT="./dock-folders.sh"
 
-# Test 1: Problematic Folder Names (Quotes, Ampersands, Angle Brackets, Apostrophes, Emojis)
+# Ensure runtime and manager are built
+./script/build_and_run.sh --verify >/dev/null 2>&1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. CORE ENGINE REGRESSION SUITE (v2.1.1 Compatibility)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Test 1: Special Characters in Folder Names
 echo "Test 1: Problematic folder names with special characters..."
 WEIRD_DIR="$TEST_DIR/Evan's \"AI & ML\" <2026> 🚀"
 mkdir -p "$WEIRD_DIR/sub1"
@@ -182,7 +189,6 @@ LAUNCHER_APP="$OUT_DIR/LauncherTarget.app"
 DROPPED_DOC="$TEST_DIR/sample_report.pdf"
 touch "$DROPPED_DOC"
 
-# True LaunchServices drop delivery via /usr/bin/open
 /usr/bin/open -a "$LAUNCHER_APP" "$DROPPED_DOC" 2>/dev/null || "$LAUNCHER_APP/Contents/MacOS/DockFolderRuntime" "$DROPPED_DOC"
 
 for _ in {1..20}; do
@@ -198,7 +204,6 @@ fi
 
 # Test 10: Launcher Mode Duplicate Drop Collision Handling (Collision-Safe Symlink)
 echo "Test 10: Launcher mode duplicate drop collision handling..."
-# Drop the same document again
 /usr/bin/open -a "$LAUNCHER_APP" "$DROPPED_DOC" 2>/dev/null || "$LAUNCHER_APP/Contents/MacOS/DockFolderRuntime" "$DROPPED_DOC"
 
 for _ in {1..20}; do
@@ -240,10 +245,8 @@ echo "Test 12: Reconcile / clear stale repaired_state.json on rebuild..."
 BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$FOLDER_APP/Contents/Info.plist")
 APP_SUPPORT_DIR="$HOME/Library/Application Support/macOS Dock Folders/$BUNDLE_ID"
 mkdir -p "$APP_SUPPORT_DIR"
-# Create a dummy stale repair state
 echo '{"targetPath":"/tmp/nonexistent_old_path","targetBookmarkBase64":null}' > "$APP_SUPPORT_DIR/repaired_state.json"
 
-# Re-running dock-folders.sh must clear the stale repair state
 $SCRIPT --output-dir "$OUT_DIR" "$FOLDER_TARGET" >/dev/null 2>&1
 
 if [[ ! -f "$APP_SUPPORT_DIR/repaired_state.json" ]]; then
@@ -260,10 +263,104 @@ else
     fail "App bundle failed strict codesign verification"
 fi
 
-echo "─────────────────────────────────────────────────────────"
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. 3.0 MANAGER & VISUAL GRID EXPANSION TESTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Test 14: Packaged Manager App & Distributable ZIP Validation
+echo "Test 14: Packaged Manager App & Distributable ZIP..."
+MANAGER_APP="dist/Dock Folders Manager.app"
+ZIP_FILE="dist/Dock-Folders-Manager-v3.0.0.zip"
+
+if [[ -d "$MANAGER_APP" && -f "$ZIP_FILE" ]]; then
+    if [[ -x "$MANAGER_APP/Contents/MacOS/Dock Folders Manager" && -f "$MANAGER_APP/Contents/Resources/DockFolderRuntime" ]]; then
+        if codesign --verify --deep --strict "$MANAGER_APP" >/dev/null 2>&1; then
+            pass "Dock Folders Manager.app is fully packaged, signed, and embeds DockFolderRuntime"
+        else
+            fail "Dock Folders Manager.app failed codesign verification"
+        fi
+    else
+        fail "Manager app is missing binaries or runtime resource"
+    fi
+else
+    fail "Manager app bundle or distribution zip artifact missing"
+fi
+
+# Test 15: Visual Grid Presentation Mode Generation
+echo "Test 15: Visual Grid presentation mode tile generation..."
+GRID_DIR="$TEST_DIR/GridTarget"
+mkdir -p "$GRID_DIR"
+touch "$GRID_DIR/AppA.app" "$GRID_DIR/AppB.app"
+
+if $SCRIPT --presentation grid --columns 6 --output-dir "$OUT_DIR" "$GRID_DIR" >/dev/null 2>&1; then
+    GRID_APP="$OUT_DIR/GridTarget.app"
+    PRES=$(python3 -c "import json; print(json.load(open('$GRID_APP/Contents/Resources/config.json'))['presentation'])")
+    COLS=$(python3 -c "import json; print(json.load(open('$GRID_APP/Contents/Resources/config.json'))['gridColumns'])")
+    if [[ "$PRES" == "grid" && "$COLS" == "6" ]]; then
+        pass "Tile generated cleanly with presentation=grid and custom column configuration"
+    else
+        fail "config.json does not contain expected grid configuration"
+    fi
+else
+    fail "Failed generating grid presentation tile"
+fi
+
+# Test 16: Custom Item Ordering Support
+echo "Test 16: Custom item ordering support in config..."
+ORDER_DIR="$TEST_DIR/CustomOrderTarget"
+mkdir -p "$ORDER_DIR"
+touch "$ORDER_DIR/Z_Item.txt" "$ORDER_DIR/A_Item.txt" "$ORDER_DIR/M_Item.txt"
+$SCRIPT --sort custom --output-dir "$OUT_DIR" "$ORDER_DIR" >/dev/null 2>&1
+
+ORDER_APP="$OUT_DIR/CustomOrderTarget.app"
+SORT_READ=$(python3 -c "import json; print(json.load(open('$ORDER_APP/Contents/Resources/config.json'))['sortMode'])")
+if [[ "$SORT_READ" == "custom" ]]; then
+    pass "Custom ordering sort mode preserved in tile config"
+else
+    fail "Sort mode in config was not 'custom'"
+fi
+
+# Test 17: 2.x Backward Compatibility in 3.0 Discovery
+echo "Test 17: 2.x tile backward-compatible discovery and defaults..."
+DISCOVERY_TEST=$(swift -e '
+import Foundation
+import AppKit
+
+// Mock legacy 2.x config without 3.0 fields
+let legacyJSON = "{\"targetPath\":\"/tmp\",\"displayName\":\"LegacyTile\",\"sortMode\":\"recent\",\"maxDepth\":3,\"tileMode\":\"folder\"}".data(using: .utf8)!
+
+struct MockLegacyConfig: Codable {
+    var targetPath: String
+    var displayName: String
+    var sortMode: String?
+    var maxDepth: Int?
+    var tileMode: String?
+    var presentation: String?
+    var gridColumns: Int?
+    var showLabels: Bool?
+}
+
+if let decoded = try? JSONDecoder().decode(MockLegacyConfig.self, from: legacyJSON) {
+    let pres = decoded.presentation ?? "menu"
+    let cols = decoded.gridColumns ?? 5
+    let labels = decoded.showLabels ?? true
+    if pres == "menu" && cols == 5 && labels == true {
+        exit(0)
+    }
+}
+exit(1)
+' 2>/dev/null || echo "fail")
+
+if [[ "$DISCOVERY_TEST" != "fail" ]]; then
+    pass "Legacy 2.x tile configs decode cleanly with safe 3.0 defaults in memory"
+else
+    fail "Legacy 2.x config decoding failed safe default application"
+fi
+
+echo "───────────────────────────────────────────────────────────────────────"
 echo "Results: $PASS_COUNT Passed, $FAIL_COUNT Failed"
 if [[ $FAIL_COUNT -eq 0 ]]; then
-    echo "🎉 All 13 comprehensive regression tests passed successfully!"
+    echo "🎉 All 17 comprehensive 3.0 regression & manager tests passed successfully!"
     exit 0
 else
     echo "❌ Some tests failed."

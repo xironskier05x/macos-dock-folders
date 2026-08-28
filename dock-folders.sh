@@ -1,9 +1,9 @@
 #!/bin/bash
-# dock-folders 2.1 — Bulletproof Native macOS Dock Folder Generator
+# dock-folders 3.0 — Bulletproof Native macOS Dock Folder Generator
 #
 # Generates ultra-fast, native .app wrappers for folders with lazy-loaded popup
-# menus, two-phase icon loading, persistent bookmark self-healing, package detection,
-# alias resolution, safe overwrite protection, and collision-free bundle identifiers.
+# menus, visual Grid launchers, two-phase icon loading, persistent bookmark self-healing,
+# package detection, alias resolution, safe overwrite protection, and collision-free bundle identifiers.
 
 set -euo pipefail
 
@@ -16,6 +16,9 @@ COLOR_ARG="dark"
 IMAGE_PATH=""
 SORT_MODE="name"
 TILE_MODE="folder"
+PRESENTATION="menu"
+GRID_COLUMNS=5
+SHOW_LABELS=true
 MAX_DEPTH=3
 ADD_TO_DOCK=false
 FORCE=false
@@ -26,32 +29,34 @@ usage() {
     cat <<EOHELP
 Usage: $(basename "$0") [OPTIONS] FOLDER [FOLDER ...]
 
-Generate ultra-fast native .app wrappers for folders with rich Dock popup menus.
+Generate ultra-fast native .app wrappers for folders with rich Dock popup menus or visual Grids.
 
 Options:
-  --output-dir DIR      Where to place generated .app bundles (default: ~/Applications/Dock Folders)
-  --all DIR             Process all subdirectories within DIR
-  --mode MODE           Tile mode: 'folder' (browses directory) or 'launcher' (virtual app drawer) (default: folder)
-  --symbol NAME         SF Symbol name for icon (e.g. folder.badge.gear, terminal.fill)
-  --color COLOR         Icon color: preset (blue, purple, green, orange, red, dark, etc.) or hex code (#007AFF)
-  --image PATH          Custom PNG/JPEG/ICNS file to use as icon
-  --sort MODE           Sort order: 'name' (A-Z), 'recent' (modified date), 'kind' (Apps/Folders/Files) (default: name)
-  --max-depth N         Nested subfolder menu depth limit [0..10] (default: 3)
-  --add-to-dock         Automatically pin the generated .app to your macOS Dock
-  --force               Allow overwriting existing .app bundles not created by Dock Folders
-  -h, --help            Show this help
+  --output-dir DIR          Where to place generated .app bundles (default: ~/Applications/Dock Folders)
+  --all DIR                 Process all subdirectories within DIR
+  --mode MODE               Tile mode: 'folder' (browses directory) or 'launcher' (virtual app drawer) (default: folder)
+  --presentation MODE       Presentation: 'menu' (hierarchical list) or 'grid' (visual icon panel) (default: menu)
+  --columns N               Grid presentation columns [3..8] (default: 5)
+  --symbol NAME             SF Symbol name for icon (e.g. folder.badge.gear, terminal.fill)
+  --color COLOR             Icon color: preset (blue, purple, green, orange, red, dark, etc.) or hex code (#007AFF)
+  --image PATH              Custom PNG/JPEG/ICNS file to use as icon
+  --sort MODE               Sort order: 'name' (A-Z), 'recent' (modified date), 'kind' (Apps/Folders/Files), 'custom' (default: name)
+  --max-depth N             Nested subfolder menu depth limit [0..10] (default: 3)
+  --add-to-dock             Automatically pin the generated .app to your macOS Dock
+  --force                   Allow overwriting existing .app bundles not created by Dock Folders
+  -h, --help                Show this help
 
 Keyboard & Mouse Shortcuts in Generated App:
-  Click / ↵             Open selected item
-  ⌥ Option + Click       Reveal selected item in Finder
-  ⌘1 ... ⌘9             Quick-launch top 9 items
-  ⌘O                    Open root folder in Finder
-  ⌘T                    Open root folder in Terminal
-  Drag & Drop           Drag files onto Dock icon (copies in folder mode; links in launcher mode)
+  Click / ↵                 Open selected item
+  ⌥ Option + Click           Reveal selected item in Finder
+  ⌘1 ... ⌘9                 Quick-launch top 9 items
+  ⌘O                        Open root folder in Finder
+  ⌘T                        Open root folder in Terminal
+  Drag & Drop               Drag files onto Dock icon (copies in folder mode; links in launcher mode)
 
 Examples:
   $(basename "$0") ~/Documents/Coding
-  $(basename "$0") --mode launcher --symbol "sparkles" --color purple ~/Applications/AI_Apps
+  $(basename "$0") --mode launcher --presentation grid --symbol "sparkles" --color purple ~/Applications/AI_Apps
   $(basename "$0") --symbol "terminal.fill" --color dark ~/Developer/Projects
   $(basename "$0") --all ~/Documents/DockFolders --add-to-dock
 EOHELP
@@ -69,6 +74,12 @@ while [[ $# -gt 0 ]]; do
         --mode)
             [[ $# -lt 2 ]] && { echo "Error: --mode requires an argument ('folder' or 'launcher')"; exit 1; }
             TILE_MODE="$2"; shift 2 ;;
+        --presentation)
+            [[ $# -lt 2 ]] && { echo "Error: --presentation requires an argument ('menu' or 'grid')"; exit 1; }
+            PRESENTATION="$2"; shift 2 ;;
+        --columns)
+            [[ $# -lt 2 ]] && { echo "Error: --columns requires an integer"; exit 1; }
+            GRID_COLUMNS="$2"; shift 2 ;;
         --symbol)
             [[ $# -lt 2 ]] && { echo "Error: --symbol requires an SF Symbol name"; exit 1; }
             SYMBOL_NAME="$2"; shift 2 ;;
@@ -79,7 +90,7 @@ while [[ $# -gt 0 ]]; do
             [[ $# -lt 2 ]] && { echo "Error: --image requires an image file path"; exit 1; }
             IMAGE_PATH="$2"; shift 2 ;;
         --sort)
-            [[ $# -lt 2 ]] && { echo "Error: --sort requires a mode ('name', 'recent', 'kind')"; exit 1; }
+            [[ $# -lt 2 ]] && { echo "Error: --sort requires a mode ('name', 'recent', 'kind', 'custom')"; exit 1; }
             SORT_MODE="$2"; shift 2 ;;
         --max-depth)
             [[ $# -lt 2 ]] && { echo "Error: --max-depth requires an integer"; exit 1; }
@@ -105,8 +116,13 @@ if [[ "$TILE_MODE" != "folder" && "$TILE_MODE" != "launcher" ]]; then
     exit 1
 fi
 
-if [[ "$SORT_MODE" != "name" && "$SORT_MODE" != "recent" && "$SORT_MODE" != "kind" && "$SORT_MODE" != "date" && "$SORT_MODE" != "modified" && "$SORT_MODE" != "type" ]]; then
-    echo "Error: Invalid --sort '$SORT_MODE'. Must be 'name', 'recent', or 'kind'."
+if [[ "$PRESENTATION" != "menu" && "$PRESENTATION" != "grid" ]]; then
+    echo "Error: Invalid --presentation '$PRESENTATION'. Must be 'menu' or 'grid'."
+    exit 1
+fi
+
+if [[ "$SORT_MODE" != "name" && "$SORT_MODE" != "recent" && "$SORT_MODE" != "kind" && "$SORT_MODE" != "custom" && "$SORT_MODE" != "date" && "$SORT_MODE" != "modified" && "$SORT_MODE" != "type" ]]; then
+    echo "Error: Invalid --sort '$SORT_MODE'. Must be 'name', 'recent', 'kind', or 'custom'."
     exit 1
 fi
 
@@ -161,9 +177,10 @@ mkdir -p "$OUTPUT_DIR"
 
 # ─── Compile Universal Runtime Binary (Cached) ────────────────────────────────
 RUNTIME_BIN="$SCRIPT_DIR/src/DockFolderRuntime"
-if [[ ! -f "$RUNTIME_BIN" || "$SCRIPT_DIR/src/runtime.swift" -nt "$RUNTIME_BIN" ]]; then
+if [[ ! -f "$RUNTIME_BIN" || "$SCRIPT_DIR/DockFolders/Runtime/DockFolderRuntime.swift" -nt "$RUNTIME_BIN" ]]; then
     echo "⚙ Compiling universal DockFolderRuntime..."
-    swiftc -O -o "$RUNTIME_BIN" "$SCRIPT_DIR/src/runtime.swift"
+    mkdir -p "$SCRIPT_DIR/src"
+    swiftc -O -o "$RUNTIME_BIN" "$SCRIPT_DIR/DockFolders/Runtime/DockFolderRuntime.swift" "$SCRIPT_DIR/DockFolders/Runtime/GridLauncherView.swift" "$SCRIPT_DIR/DockFolders/Runtime/GridLauncherWindow.swift" "$SCRIPT_DIR/DockFolders/Models/LauncherItem.swift"
 fi
 
 # ─── XML & JSON Helpers ───────────────────────────────────────────────────────
@@ -182,7 +199,6 @@ get_existing_target() {
     python3 -c "import json, sys; print(json.load(open(sys.argv[1])).get('targetPath', ''))" "$cfg_file" 2>/dev/null || echo ""
 }
 
-# Creates a 1024x1024 .icns file from SF Symbol, Emoji, Image, or Folder Icon
 create_icns() {
     local folder_path="$1"
     local icns_path="$2"
@@ -321,7 +337,6 @@ SWIFT
     return $res
 }
 
-# ─── Dock Pinning Helper (Idempotent & Truthful) ─────────────────────────────
 pin_to_dock() {
     local app_bundle="$1"
     if command -v dockutil &>/dev/null; then
@@ -349,7 +364,7 @@ pin_to_dock() {
 DOCK_RESTART_NEEDED=false
 
 # ─── Main Generator Loop ──────────────────────────────────────────────────────
-echo "🚀  macOS Dock Folders 2.1 Generator"
+echo "🚀  macOS Dock Folders 3.0 Generator"
 echo "    Output Directory: $OUTPUT_DIR"
 echo ""
 
@@ -365,15 +380,10 @@ for folder_arg in "${FOLDERS[@]}"; do
     folder_name="$(basename "$folder")"
     parent_name="$(basename "$(dirname "$folder")")"
 
-    # Deterministic hash of canonical path for bundle ID and collision avoidance
     folder_hash=$(echo -n "$folder" | shasum -a 256 | head -c 12)
     short_hash=$(echo -n "$folder" | shasum -a 256 | head -c 6)
     bundle_id="com.macosdockfolders.tile.$folder_hash"
 
-    # Multi-collision resolution:
-    # 1. Try "Folder.app"
-    # 2. If taken by different target -> "Folder (Parent).app"
-    # 3. If that's also taken by different target -> "Folder [hash].app"
     app_name="${folder_name}.app"
     app_path="$OUTPUT_DIR/$app_name"
 
@@ -383,7 +393,6 @@ for folder_arg in "${FOLDERS[@]}"; do
         [[ -f "$existing_cfg" ]] && existing_target=$(get_existing_target "$existing_cfg")
         
         if [[ -n "$existing_target" && "$existing_target" != "$folder" ]]; then
-            # Level 2 candidate
             app_name="${folder_name} (${parent_name}).app"
             app_path="$OUTPUT_DIR/$app_name"
             
@@ -392,7 +401,6 @@ for folder_arg in "${FOLDERS[@]}"; do
                 existing_target=""
                 [[ -f "$existing_cfg" ]] && existing_target=$(get_existing_target "$existing_cfg")
                 if [[ -n "$existing_target" && "$existing_target" != "$folder" ]]; then
-                    # Level 3 candidate: unique hash
                     app_name="${folder_name} [${short_hash}].app"
                     app_path="$OUTPUT_DIR/$app_name"
                 fi
@@ -402,7 +410,6 @@ for folder_arg in "${FOLDERS[@]}"; do
 
     echo "📁 Building: $folder_name -> $app_name"
 
-    # Safety check: Verify overwrite permission if app already exists
     if [[ -d "$app_path" && "$FORCE" != "true" ]]; then
         is_dock_folder=$(/usr/libexec/PlistBuddy -c "Print :DockFoldersGenerated" "$app_path/Contents/Info.plist" 2>/dev/null || echo "false")
         if [[ "$is_dock_folder" != "true" && "$is_dock_folder" != "YES" ]]; then
@@ -412,11 +419,9 @@ for folder_arg in "${FOLDERS[@]}"; do
         fi
     fi
 
-    # Clear any stale external repaired state when explicitly rebuilding this target
     app_support_dir="$HOME/Library/Application Support/macOS Dock Folders/$bundle_id"
     rm -f "$app_support_dir/repaired_state.json" 2>/dev/null || true
 
-    # Transactional Staging Directory inside $OUTPUT_DIR (guarantees same volume for rename)
     staging_base="$OUTPUT_DIR/.staging_$$"
     staging_app="$staging_base/$app_name"
     mkdir -p "$staging_app/Contents/MacOS" "$staging_app/Contents/Resources"
@@ -425,7 +430,7 @@ for folder_arg in "${FOLDERS[@]}"; do
     cp "$RUNTIME_BIN" "$staging_app/Contents/MacOS/DockFolderRuntime"
     chmod +x "$staging_app/Contents/MacOS/DockFolderRuntime"
 
-    # 2. Generate Base64 URL Bookmark for persistent self-healing tracking
+    # 2. Generate Base64 URL Bookmark
     bookmark_b64=$(swift -e '
 import Foundation
 let u = URL(fileURLWithPath: CommandLine.arguments[1])
@@ -434,7 +439,7 @@ if let b = try? u.bookmarkData(options: .minimalBookmark, includingResourceValue
 }
 ' "$folder" 2>/dev/null || echo "")
 
-    # 3. Create config.json safely
+    # 3. Create config.json
     python3 -c "
 import json, sys
 data = {
@@ -443,11 +448,14 @@ data = {
     'displayName': sys.argv[3],
     'sortMode': sys.argv[4],
     'maxDepth': int(sys.argv[5]),
-    'tileMode': sys.argv[6]
+    'tileMode': sys.argv[6],
+    'presentation': sys.argv[7],
+    'gridColumns': int(sys.argv[8]),
+    'showLabels': True
 }
-with open(sys.argv[7], 'w') as f:
+with open(sys.argv[9], 'w') as f:
     json.dump(data, f, indent=2)
-" "$folder" "$bookmark_b64" "$folder_name" "$SORT_MODE" "$MAX_DEPTH" "$TILE_MODE" "$staging_app/Contents/Resources/config.json"
+" "$folder" "$bookmark_b64" "$folder_name" "$SORT_MODE" "$MAX_DEPTH" "$TILE_MODE" "$PRESENTATION" "$GRID_COLUMNS" "$staging_app/Contents/Resources/config.json"
 
     # 4. Generate applet.icns
     icns_path="$staging_app/Contents/Resources/applet.icns"
@@ -477,7 +485,7 @@ with open(sys.argv[7], 'w') as f:
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.1</string>
+    <string>3.0</string>
     <key>DockFoldersGenerated</key>
     <true/>
     <key>LSUIElement</key>
