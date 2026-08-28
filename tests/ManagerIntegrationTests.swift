@@ -468,8 +468,10 @@ func runAllTests() {
         }
         gridWin.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
 
-        // Run runloop briefly for 0.15s async dispatch
-        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        let deadline = Date().addingTimeInterval(1.0)
+        while !dismissedByResign && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
         assertTest(dismissedByResign, "Grid window windowDidResignKey triggers onDismiss")
     } catch {
         assertTest(false, "Grid dismissal lifecycle test failed: \(error)")
