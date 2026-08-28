@@ -120,20 +120,24 @@ public class GridLauncherWindow: NSPanel, NSWindowDelegate {
         let visibleFrame = s.visibleFrame
         let winSize = self.frame.size
 
-        var posX = max(visibleFrame.minX + 12, min(anchor.x - winSize.width / 2, visibleFrame.maxX - winSize.width - 12))
-        var posY = visibleFrame.minY + 12
+        var posX = max(visibleFrame.minX + 16, min(anchor.x - winSize.width / 2, visibleFrame.maxX - winSize.width - 16))
+        var posY = max(visibleFrame.minY + 24, anchor.y + 24)
 
         let dockOrientation = (UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom").lowercased()
         switch dockOrientation {
         case "left":
-            posX = visibleFrame.minX + 12
-            posY = max(visibleFrame.minY + 12, min(anchor.y - winSize.height / 2, visibleFrame.maxY - winSize.height - 12))
+            posX = max(visibleFrame.minX + 24, anchor.x + 24)
+            posY = max(visibleFrame.minY + 16, min(anchor.y - winSize.height / 2, visibleFrame.maxY - winSize.height - 16))
         case "right":
-            posX = visibleFrame.maxX - winSize.width - 12
-            posY = max(visibleFrame.minY + 12, min(anchor.y - winSize.height / 2, visibleFrame.maxY - winSize.height - 12))
+            posX = min(visibleFrame.maxX - winSize.width - 24, anchor.x - winSize.width - 24)
+            posY = max(visibleFrame.minY + 16, min(anchor.y - winSize.height / 2, visibleFrame.maxY - winSize.height - 16))
         default:
-            // Dock at bottom: strictly place above Dock's top boundary
-            posY = visibleFrame.minY + 12
+            // Bottom Dock: float comfortably above the Dock
+            posY = max(visibleFrame.minY + 24, anchor.y + 24)
+        }
+
+        if posY + winSize.height > visibleFrame.maxY - 16 {
+            posY = visibleFrame.maxY - winSize.height - 16
         }
 
         self.setFrame(NSRect(x: posX, y: posY, width: winSize.width, height: winSize.height), display: true)
